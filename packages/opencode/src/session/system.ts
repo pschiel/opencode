@@ -24,11 +24,20 @@ export namespace SystemPrompt {
     return [PROMPT_ANTHROPIC_WITHOUT_TODO]
   }
 
-  export async function environment(model: Provider.Model) {
+  export async function environment(
+    model: Provider.Model,
+    options?: { model_id?: boolean; env?: boolean; files?: boolean },
+  ) {
     const project = Instance.project
-    return [
-      [
+    const parts: string[] = []
+
+    if (options?.model_id !== false)
+      parts.push(
         `You are powered by the model named ${model.api.id}. The exact model ID is ${model.providerID}/${model.api.id}`,
+      )
+
+    if (options?.env !== false)
+      parts.push(
         `Here is some useful information about the environment you are running in:`,
         `<env>`,
         `  Working directory: ${Instance.directory}`,
@@ -36,9 +45,14 @@ export namespace SystemPrompt {
         `  Platform: ${process.platform}`,
         `  Today's date: ${new Date().toDateString()}`,
         `</env>`,
+      )
+
+    // files info was disabled during permission rework
+    if (options?.files !== false && false)
+      parts.push(
         `<files>`,
         `  ${
-          project.vcs === "git" && false
+          project.vcs === "git"
             ? await Ripgrep.tree({
                 cwd: Instance.directory,
                 limit: 200,
@@ -46,7 +60,8 @@ export namespace SystemPrompt {
             : ""
         }`,
         `</files>`,
-      ].join("\n"),
-    ]
+      )
+
+    return [parts.join("\n")]
   }
 }
