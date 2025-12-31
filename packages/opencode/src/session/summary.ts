@@ -109,6 +109,62 @@ export namespace SessionSummary {
       diffs,
     }
     await Session.updateMessage(userMsg)
+
+    const textPart = msgWithParts.parts.find((p) => p.type === "text" && !p.synthetic) as MessageV2.TextPart
+    if (textPart && !userMsg.summary?.title) {
+      const msgAgent = await Agent.get(userMsg.agent)
+      const titleAgent = msgAgent.options.agents?.title ?? "title"
+      if (titleAgent === "none") {
+        const title = textPart.text.length > 50 ? textPart.text.slice(0, 50) + "..." : textPart.text
+        userMsg.summary.title = title
+        await Session.updateMessage(userMsg)
+        await Session.update(
+          userMsg.sessionID,
+          (draft) => {
+            draft.title = title
+          },
+          { touch: false },
+        )
+        return
+      }
+      const agent = await Agent.get(titleAgent)
+      const stream = await LLM.stream({
+        agent,
+        user: userMsg,
+        tools: {},
+        model: agent.model
+          ? await Provider.getModel(agent.model.providerID, agent.model.modelID)
+          : ((await Provider.getSmallModel(userMsg.model.providerID)) ??
+            (await Provider.getModel(userMsg.model.providerID, userMsg.model.modelID))),
+        small: true,
+        messages: [
+          {
+            role: "user" as const,
+            content: `
+              The following is the text to summarize:
+              <text>
+              ${textPart?.text ?? ""}
+              </text>
+            `,
+          },
+        ],
+        abort: new AbortController().signal,
+        sessionID: userMsg.sessionID,
+        system: [],
+        retries: 3,
+      })
+      const result = await stream.text
+      log.info("title", { title: result })
+      userMsg.summary.title = result
+      await Session.updateMessage(userMsg)
+      await Session.update(
+        userMsg.sessionID,
+        (draft) => {
+          draft.title = result
+        },
+        { touch: false },
+      )
+    }
   }
 
   export const diff = fn(
