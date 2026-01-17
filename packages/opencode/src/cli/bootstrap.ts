@@ -2,6 +2,7 @@ import { InstanceBootstrap } from "../project/bootstrap"
 import { Instance } from "../project/instance"
 
 export async function bootstrap<T>(directory: string, cb: () => Promise<T>) {
+  // Storage.init() is now called automatically in Instance.provide()
   return Instance.provide({
     directory,
     init: InstanceBootstrap,

@@ -535,6 +535,7 @@ export namespace Server {
   }
 
   export function listen(opts: { port: number; hostname: string; mdns?: boolean; cors?: string[] }) {
+    // Storage.init() is now called automatically in Instance.provide()
     _corsWhitelist = opts.cors ?? []
 
     const args = {
