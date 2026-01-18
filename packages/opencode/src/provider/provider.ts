@@ -991,6 +991,7 @@ export namespace Provider {
         // Preserve custom fetch if it exists, wrap it with timeout logic
         const fetchFn = customFetch ?? fetch
         const opts = init ?? {}
+        const startTime = Date.now()
 
         if (options["timeout"] !== undefined && options["timeout"] !== null) {
           const signals: AbortSignal[] = []
@@ -1001,6 +1002,11 @@ export namespace Provider {
 
           opts.signal = combined
         }
+
+        const url = typeof input === "string" ? input : input.url
+
+        // Generate request ID for correlating request/response
+        const requestId = Math.random().toString(36).substring(2, 8)
 
         // Strip openai itemId metadata following what codex does
         // Codex uses #[serde(skip_serializing)] on id fields for all item types:
@@ -1020,11 +1026,199 @@ export namespace Provider {
           }
         }
 
-        return fetchFn(input, {
-          ...opts,
-          // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
-          timeout: false,
-        })
+        // Log request if enabled
+        if (Log.isRequestLoggingEnabled()) {
+          const requestData: any = {
+            type: "REQUEST",
+            requestId,
+            provider: model.providerID,
+            model: model.id,
+            url,
+            method: opts.method ?? "GET",
+          }
+
+          // Parse and filter the request body
+          if (opts.body) {
+            try {
+              const body = typeof opts.body === "string" ? JSON.parse(opts.body) : opts.body
+              const filteredBody: any = {}
+
+              // Extract messages (OpenCode format uses 'input', OpenAI uses 'messages')
+              const messages = body.input || body.messages
+              if (messages && Array.isArray(messages)) {
+                filteredBody.messages = messages.map((msg: any) => {
+                  const role = msg.role
+                  let content: string
+
+                  // Handle different content formats
+                  if (typeof msg.content === "string") {
+                    content = msg.content
+                  } else if (Array.isArray(msg.content)) {
+                    // Multi-part content (text + images, etc)
+                    const textPart = msg.content.find((p: any) => p.type === "text" || p.text)
+                    content = textPart ? textPart.text || textPart.content || "[complex content]" : "[complex content]"
+                  } else {
+                    content = "[complex content]"
+                  }
+
+                  return { role, content }
+                })
+              }
+
+              // Summarize tools if present
+              if (body.tools && Array.isArray(body.tools)) {
+                filteredBody.tools_count = body.tools.length
+                filteredBody.tools_summary = body.tools
+                  .map((t: any) => t.function?.name || t.name)
+                  .filter(Boolean)
+                  .join(", ")
+              }
+
+              // Keep other useful fields
+              if (body.model) filteredBody.model = body.model
+              if (body.max_tokens) filteredBody.max_tokens = body.max_tokens
+              if (body.max_output_tokens) filteredBody.max_output_tokens = body.max_output_tokens
+              if (body.temperature !== undefined) filteredBody.temperature = body.temperature
+              if (body.stream !== undefined) filteredBody.stream = body.stream
+
+              requestData.body = filteredBody
+            } catch {
+              requestData.body = "[parse error]"
+            }
+          }
+
+          await Log.logRequest(requestData)
+        }
+
+        try {
+          const response = await fetchFn(input, {
+            ...opts,
+            // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
+            timeout: false,
+          })
+
+          // Log response if enabled
+          if (Log.isRequestLoggingEnabled()) {
+            const clonedResponse = response.clone()
+            const responseText = await clonedResponse.text().catch(() => "[stream or unreadable]")
+            const responseData: any = {
+              type: "RESPONSE",
+              requestId,
+              provider: model.providerID,
+              model: model.id,
+              url,
+              status: response.status,
+              duration: Date.now() - startTime,
+            }
+
+            // Parse and extract useful information from response
+            let completion = ""
+            let tokenUsage: any = null
+
+            // Try to parse as JSON first (non-streaming response)
+            try {
+              const jsonResponse = JSON.parse(responseText)
+
+              // Extract completion text
+              if (jsonResponse.choices && Array.isArray(jsonResponse.choices)) {
+                const firstChoice = jsonResponse.choices[0]
+                completion = firstChoice?.message?.content || firstChoice?.text || ""
+              } else if (jsonResponse.content) {
+                completion = jsonResponse.content
+              } else if (jsonResponse.text) {
+                completion = jsonResponse.text
+              }
+
+              // Extract token usage
+              if (jsonResponse.usage) {
+                tokenUsage = jsonResponse.usage
+              }
+            } catch {
+              // If not JSON, try parsing as SSE stream
+              if (responseText.includes("data:")) {
+                const lines = responseText.split("\n")
+
+                for (const line of lines) {
+                  if (!line.startsWith("data:")) continue
+
+                  const dataStr = line.substring(5).trim()
+                  if (dataStr === "[DONE]") continue
+
+                  try {
+                    const data = JSON.parse(dataStr)
+
+                    // OpenAI format: extract delta content
+                    if (data.choices?.[0]?.delta?.content) {
+                      completion += data.choices[0].delta.content
+                    }
+
+                    // OpenAI format: final message
+                    if (data.choices?.[0]?.message?.content) {
+                      completion = data.choices[0].message.content
+                    }
+
+                    // OpenCode format: extract text from various event types
+                    if (data.type === "response.output_text.done" && data.text) {
+                      completion = data.text
+                    }
+                    if (data.type === "content.delta" && data.delta?.text) {
+                      completion += data.delta.text
+                    }
+                    if (data.type === "response.done" && data.response?.output?.[0]?.content?.[0]?.text) {
+                      completion = data.response.output[0].content[0].text
+                    }
+
+                    // Extract token usage from various formats
+                    if (data.usage) {
+                      tokenUsage = data.usage
+                    }
+                    if (data.response?.usage) {
+                      tokenUsage = data.response.usage
+                    }
+                  } catch {
+                    // Skip lines that can't be parsed
+                  }
+                }
+              }
+            }
+
+            // Add completion text (no truncation)
+            if (completion) {
+              responseData.completion = completion
+            } else {
+              responseData.completion = "[no text extracted]"
+            }
+
+            // Add token usage if found
+            if (tokenUsage) {
+              responseData.input_tokens = tokenUsage.input_tokens || tokenUsage.prompt_tokens
+              responseData.output_tokens = tokenUsage.output_tokens || tokenUsage.completion_tokens
+              responseData.total_tokens =
+                tokenUsage.total_tokens ||
+                (tokenUsage.input_tokens || tokenUsage.prompt_tokens || 0) +
+                  (tokenUsage.output_tokens || tokenUsage.completion_tokens || 0)
+            }
+
+            await Log.logRequest(responseData)
+          }
+
+          return response
+        } catch (error) {
+          // Log error if enabled
+          if (Log.isRequestLoggingEnabled()) {
+            const errorData = {
+              type: "ERROR",
+              requestId,
+              provider: model.providerID,
+              model: model.id,
+              url,
+              error: error instanceof Error ? error.message : String(error),
+              duration: Date.now() - startTime,
+            }
+            await Log.logRequest(errorData)
+          }
+          throw error
+        }
       }
 
       const bundledFn = BUNDLED_PROVIDERS[model.api.npm]

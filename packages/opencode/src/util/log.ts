@@ -1,5 +1,6 @@
 import path from "path"
 import fs from "fs/promises"
+import fsSync from "fs"
 import { Global } from "../global"
 import z from "zod"
 
@@ -44,15 +45,25 @@ export namespace Log {
     print: boolean
     dev?: boolean
     level?: Level
+    requestLog?: boolean
   }
 
   let logpath = ""
   export function file() {
     return logpath
   }
-  let write = (msg: any) => {
+  let write = (msg: any): number | Promise<number> => {
     process.stderr.write(msg)
     return msg.length
+  }
+
+  let requestLogPath = ""
+  let requestLogEnabled = false
+  export function requestFile() {
+    return requestLogPath
+  }
+  let requestWrite = (msg: any): number | Promise<number> => {
+    return 0
   }
 
   export async function init(options: Options) {
@@ -71,20 +82,135 @@ export namespace Log {
       writer.flush()
       return num
     }
+
+    if (options.requestLog) {
+      requestLogEnabled = true
+      requestLogPath = path.join(
+        Global.Path.log,
+        options.dev ? "dev.request.log" : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".request.log",
+      )
+      // Create the file initially
+      await fs.writeFile(requestLogPath, "").catch(() => {})
+
+      // Use SYNCHRONOUS file appending to ensure writes complete before process exit
+      requestWrite = (msg: any) => {
+        try {
+          fsSync.appendFileSync(requestLogPath, msg)
+          return msg.length
+        } catch (e) {
+          return 0
+        }
+      }
+    }
+  }
+
+  export function isRequestLoggingEnabled() {
+    return requestLogEnabled
+  }
+
+  function formatRequestLog(data: any): string {
+    const timestamp = new Date().toISOString()
+    const time = timestamp.substring(11, 19) // HH:MM:SS
+
+    // ANSI color codes
+    const RESET = "\x1b[0m"
+    const BOLD = "\x1b[1m"
+    const DIM = "\x1b[2m"
+    const CYAN = "\x1b[36m"
+    const GREEN = "\x1b[32m"
+    const YELLOW = "\x1b[33m"
+    const RED = "\x1b[31m"
+    const BLUE = "\x1b[34m"
+    const MAGENTA = "\x1b[35m"
+    const GRAY = "\x1b[90m"
+    const ORANGE = "\x1b[38;5;208m"
+
+    const lines: string[] = []
+    const separator = GRAY + "─".repeat(100) + RESET
+    const requestId = data.requestId ? `${GRAY}[${data.requestId}]${RESET}` : ""
+
+    if (data.type === "REQUEST") {
+      // Single status line with request ID
+      const statusLine = `${CYAN}${BOLD}▶ REQUEST${RESET} ${DIM}${time}${RESET} ${requestId} ${GRAY}|${RESET} ${data.provider}${GRAY}/${RESET}${BLUE}${BOLD}${data.model}${RESET} ${GRAY}|${RESET} ${DIM}${data.url}${RESET}`
+      lines.push(separator)
+      lines.push(statusLine)
+      lines.push("") // blank line after status
+
+      if (data.body?.messages) {
+        for (const msg of data.body.messages) {
+          const roleColor = msg.role === "user" ? GREEN : msg.role === "assistant" ? BLUE : MAGENTA
+          const content = msg.content.trim()
+
+          // Show full content at first column, no indentation
+          lines.push(`${roleColor}${BOLD}[${msg.role}]${RESET} ${content}`)
+        }
+      }
+
+      if (data.body?.tools_count) {
+        lines.push(`${DIM}Tools: ${data.body.tools_count} (${data.body.tools_summary})${RESET}`)
+      }
+    } else if (data.type === "RESPONSE") {
+      // Single status line with request ID
+      const statusColor = data.status >= 200 && data.status < 300 ? GREEN : RED
+      const tokenInfo = data.total_tokens
+        ? `${GRAY}|${RESET} Tokens: ${CYAN}${data.input_tokens}${RESET}/${YELLOW}${data.output_tokens}${RESET}=${BOLD}${data.total_tokens}${RESET}`
+        : ""
+
+      const statusLine = `${GREEN}${BOLD}◀ RESPONSE${RESET} ${DIM}${time}${RESET} ${requestId} ${GRAY}|${RESET} ${statusColor}${data.status}${RESET} ${GRAY}|${RESET} ${data.duration}ms ${tokenInfo}`
+      lines.push(separator)
+      lines.push(statusLine)
+      lines.push("") // blank line after status
+
+      if (data.completion) {
+        // Format: [model] completion text at first column
+        const modelName = data.model || "model"
+        lines.push(`${BLUE}${BOLD}[${modelName}]${RESET} ${data.completion}`)
+      }
+    } else if (data.type === "ERROR") {
+      // Single status line with request ID
+      const statusLine = `${RED}${BOLD}✖ ERROR${RESET} ${DIM}${time}${RESET} ${requestId} ${GRAY}|${RESET} ${data.provider}${GRAY}/${RESET}${data.model} ${GRAY}|${RESET} ${data.duration}ms`
+      lines.push(separator)
+      lines.push(statusLine)
+      lines.push("") // blank line after status
+      lines.push(`${RED}${data.error}${RESET}`)
+    }
+
+    lines.push("") // blank line after entry
+    return lines.join("\n")
+  }
+
+  export async function logRequest(data: any) {
+    if (!requestLogEnabled) return
+    requestWrite(formatRequestLog(data))
+  }
+
+  export async function flushRequestLog() {
+    // No-op since we're using synchronous writes
   }
 
   async function cleanup(dir: string) {
     const glob = new Bun.Glob("????-??-??T??????.log")
+    const requestGlob = new Bun.Glob("????-??-??T??????.request.log")
     const files = await Array.fromAsync(
       glob.scan({
         cwd: dir,
         absolute: true,
       }),
     )
-    if (files.length <= 5) return
-
-    const filesToDelete = files.slice(0, -10)
-    await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
+    const requestFiles = await Array.fromAsync(
+      requestGlob.scan({
+        cwd: dir,
+        absolute: true,
+      }),
+    )
+    if (files.length > 5) {
+      const filesToDelete = files.slice(0, -10)
+      await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
+    }
+    if (requestFiles.length > 5) {
+      const filesToDelete = requestFiles.slice(0, -10)
+      await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
+    }
   }
 
   function formatError(error: Error, depth = 0): string {
