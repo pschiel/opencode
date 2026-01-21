@@ -73,6 +73,7 @@ import { DialogEditProject } from "@/components/dialog-edit-project"
 import { Titlebar } from "@/components/titlebar"
 import { useServer } from "@/context/server"
 import { useLanguage, type Locale } from "@/context/language"
+import { ShaderOverlay } from "@/components/shader-overlay"
 
 export default function Layout(props: ParentProps) {
   const [store, setStore, , ready] = persisted(
@@ -87,6 +88,82 @@ export default function Layout(props: ParentProps) {
       workspaceExpanded: {} as Record<string, boolean>,
     }),
   )
+
+  // Shader overlay state
+  const [shaderEnabled, setShaderEnabled] = createSignal(localStorage.getItem("shader-enabled") === "true")
+  const [shaderEffect, setShaderEffect] = createSignal<"none" | "pipboy" | "atari" | "vhs">(
+    (localStorage.getItem("shader-effect") as any) || "none",
+  )
+
+  // Save shader state to localStorage
+  createEffect(() => {
+    localStorage.setItem("shader-enabled", shaderEnabled().toString())
+    localStorage.setItem("shader-effect", shaderEffect())
+  })
+
+  // Cycle shader function
+  const cycleShader = () => {
+    const effects: Array<"none" | "pipboy" | "atari" | "vhs"> = ["none", "pipboy", "atari", "vhs"]
+    const effectLabels: Record<"none" | "pipboy" | "atari" | "vhs", string> = {
+      none: "Off",
+      pipboy: "Pip-Boy",
+      atari: "Atari XL",
+      vhs: "VHS",
+    }
+    const current = shaderEffect()
+    const currentIndex = effects.indexOf(current)
+    const nextIndex = (currentIndex + 1) % effects.length
+    const next = effects[nextIndex]
+    setShaderEffect(next)
+    setShaderEnabled(next !== "none")
+    showToast({
+      title: "Shader",
+      description: effectLabels[next],
+    })
+  }
+
+  // Apply shader text glow effects
+  createEffect(() => {
+    const styleId = "shader-glow-style"
+    let style = document.getElementById(styleId) as HTMLStyleElement | null
+
+    const effect = shaderEffect()
+    const enabled = shaderEnabled()
+
+    if (enabled && effect === "pipboy") {
+      if (!style) {
+        style = document.createElement("style")
+        style.id = styleId
+        document.head.appendChild(style)
+      }
+      style.textContent = `
+        * {
+          text-shadow: 0 0 2px rgba(50, 255, 100, 0.7), 0 0 10px rgba(50, 255, 100, 0.9) !important;
+        }
+      `
+    } else if (enabled && effect === "atari") {
+      if (!style) {
+        style = document.createElement("style")
+        style.id = styleId
+        document.head.appendChild(style)
+      }
+      style.textContent = `
+        @font-face {
+          font-family: 'Atari';
+          src: url('/atari.ttf') format('truetype');
+          font-weight: normal;
+          font-style: normal;
+        }
+        * {
+          font-family: 'Atari', monospace !important;
+          text-shadow: 0 0 2px rgba(200, 240, 255, 0.5), 0 0 6px rgba(180, 230, 255, 0.6) !important;
+          text-transform: uppercase !important;
+        }
+      `
+    } else {
+      if (style) style.remove()
+    }
+  })
 
   const pageReady = createMemo(() => ready())
 
@@ -1041,6 +1118,49 @@ export default function Layout(props: ParentProps) {
         category: language.t("command.category.theme"),
         keybind: "mod+shift+t",
         onSelect: () => cycleTheme(1),
+      },
+      {
+        id: "shader.cycle",
+        title: "Cycle shader",
+        category: "Shader",
+        keybind: "ctrl+q",
+        onSelect: () => cycleShader(),
+      },
+      {
+        id: "shader.off",
+        title: "Shader: Off",
+        category: "Shader",
+        onSelect: () => {
+          setShaderEffect("none")
+          setShaderEnabled(false)
+        },
+      },
+      {
+        id: "shader.pipboy",
+        title: "Shader: Pip-Boy",
+        category: "Shader",
+        onSelect: () => {
+          setShaderEffect("pipboy")
+          setShaderEnabled(true)
+        },
+      },
+      {
+        id: "shader.atari",
+        title: "Shader: Atari XL",
+        category: "Shader",
+        onSelect: () => {
+          setShaderEffect("atari")
+          setShaderEnabled(true)
+        },
+      },
+      {
+        id: "shader.vhs",
+        title: "Shader: VHS",
+        category: "Shader",
+        onSelect: () => {
+          setShaderEffect("vhs")
+          setShaderEnabled(true)
+        },
       },
     ]
 
@@ -2908,6 +3028,7 @@ export default function Layout(props: ParentProps) {
         </main>
       </div>
       <Toast.Region />
+      <ShaderOverlay enabled={shaderEnabled()} effect={shaderEffect()} />
     </div>
   )
 }
