@@ -654,6 +654,19 @@ export namespace SessionPrompt {
     using _ = log.time("resolveTools")
     const tools: Record<string, AITool> = {}
 
+    if (input.model.providerID === "xai") {
+      try {
+        const { xai } = await import("@ai-sdk/xai")
+        if (xai.tools) {
+          tools["web_search"] = xai.tools.webSearch() as any
+          tools["x_search"] = xai.tools.xSearch() as any
+          tools["code_execution"] = xai.tools.codeExecution() as any
+        }
+      } catch (error) {
+        log.error("Failed to load xAI server-side tools", { error })
+      }
+    }
+
     const context = (args: any, options: ToolCallOptions): Tool.Context => ({
       sessionID: input.session.id,
       abort: options.abortSignal!,

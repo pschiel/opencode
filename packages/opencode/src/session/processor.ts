@@ -126,6 +126,30 @@ export namespace SessionProcessor {
                 case "tool-call": {
                   const match = toolcalls[value.toolCallId]
                   if (match) {
+                    const xaiServerSideTools = ["web_search", "x_search", "code_execution"]
+                    const isServerSideTool =
+                      input.model.providerID === "xai" && xaiServerSideTools.includes(value.toolName)
+
+                    if (isServerSideTool) {
+                      await Session.updatePart({
+                        ...match,
+                        tool: value.toolName,
+                        state: {
+                          status: "completed",
+                          input: value.input,
+                          output: "Server-side tool executed",
+                          title: "",
+                          metadata: value.providerMetadata || {},
+                          time: {
+                            start: Date.now(),
+                            end: Date.now(),
+                          },
+                        },
+                      })
+                      delete toolcalls[value.toolCallId]
+                      break
+                    }
+
                     const part = await Session.updatePart({
                       ...match,
                       tool: value.toolName,
