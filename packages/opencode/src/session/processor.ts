@@ -34,6 +34,7 @@ export namespace SessionProcessor {
     let blocked = false
     let attempt = 0
     let needsCompaction = false
+    let shouldStopAfterTool = false
 
     const result = {
       get message() {
@@ -188,6 +189,10 @@ export namespace SessionProcessor {
                       },
                     })
 
+                    if (value.output.metadata?.stop === true) {
+                      shouldStopAfterTool = true
+                    }
+
                     delete toolcalls[value.toolCallId]
                   }
                   break
@@ -335,6 +340,7 @@ export namespace SessionProcessor {
                   continue
               }
               if (needsCompaction) break
+              if (shouldStopAfterTool) break
             }
           } catch (e: any) {
             log.error("process", {
@@ -397,6 +403,7 @@ export namespace SessionProcessor {
           if (needsCompaction) return "compact"
           if (blocked) return "stop"
           if (input.assistantMessage.error) return "stop"
+          if (shouldStopAfterTool) return "stop"
           return "continue"
         }
       },
