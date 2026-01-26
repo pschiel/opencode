@@ -731,6 +731,36 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
       }
     }
 
+    // JSON Tool Call Detection for non-native tool-calling models
+    if (!hasFunctionCall) {
+      const textParts = content.filter((p) => p.type === "text")
+      if (textParts.length === 1) {
+        const textContent = textParts[0].text.trim()
+        try {
+          const parsed = JSON.parse(textContent)
+          if (parsed.tool && typeof parsed.tool === "string") {
+            const toolName = parsed.tool
+            const callId = this.config.generateId?.() ?? generateId()
+            const toolArgs = { ...parsed }
+            delete toolArgs.tool
+            const textIndex = content.findIndex((p) => p.type === "text")
+            if (textIndex !== -1) {
+              content.splice(textIndex, 1)
+            }
+            content.push({
+              type: "tool-call",
+              toolCallId: callId,
+              toolName: toolName,
+              input: JSON.stringify(toolArgs),
+            })
+            hasFunctionCall = true
+          }
+        } catch (e) {
+          // Not valid JSON or parsing failed - leave content as-is
+        }
+      }
+    }
+
     const providerMetadata: SharedV2ProviderMetadata = {
       openai: { responseId: response.id },
     }
