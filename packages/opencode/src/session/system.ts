@@ -47,8 +47,7 @@ export namespace SystemPrompt {
         `</env>`,
       )
 
-    // files info was disabled during permission rework
-    if (options?.files !== false && false)
+    if (options?.files !== false)
       parts.push(
         `<files>`,
         `  ${

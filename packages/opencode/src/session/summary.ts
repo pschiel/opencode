@@ -138,13 +138,6 @@ export namespace SessionSummary {
         const title = textPart.text.length > 50 ? textPart.text.slice(0, 50) + "..." : textPart.text
         userMsg.summary.title = title
         await Session.updateMessage(userMsg)
-        await Session.update(
-          userMsg.sessionID,
-          (draft) => {
-            draft.title = title
-          },
-          { touch: false },
-        )
         return
       }
       const agent = await Agent.get(titleAgent)
@@ -177,13 +170,6 @@ export namespace SessionSummary {
       log.info("title", { title: result })
       userMsg.summary.title = result
       await Session.updateMessage(userMsg)
-      await Session.update(
-        userMsg.sessionID,
-        (draft) => {
-          draft.title = result
-        },
-        { touch: false },
-      )
     }
   }
 

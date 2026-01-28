@@ -65,9 +65,7 @@ export namespace LLM {
     const isCodex = provider.id === "openai" && auth?.type === "oauth"
 
     const system = []
-    const customSystem = input.agent.options.system
-      ? await SystemPrompt.environment(input.model, input.agent.options.system)
-      : input.system
+    const customSystem = input.system
     system.push(
       [
         // use agent prompt otherwise provider prompt

@@ -947,7 +947,7 @@ export namespace SessionPrompt {
                 ]
               }
               break
-            case "file:":
+            case "file:": {
               log.info("file", { mime: part.mime })
               // have to normalize, symbol search returns absolute paths
               // Decode the pathname since URL constructor doesn't automatically decode it
@@ -1130,6 +1130,7 @@ export namespace SessionPrompt {
                   source: part.source,
                 },
               ]
+            }
           }
         }
 
@@ -1776,7 +1777,23 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const hasOnlySubtaskParts = subtaskParts.length > 0 && firstRealUser.parts.every((p) => p.type === "subtask")
 
     const msgAgent = await Agent.get(firstRealUser.info.agent)
-    const agent = await Agent.get(msgAgent.options.agents?.title ?? "title")
+    const titleAgent = msgAgent.options.agents?.title ?? "title"
+    if (titleAgent === "none") {
+      const textPart = firstRealUser.parts.find((part) => part.type === "text" && !part.synthetic) as
+        | MessageV2.TextPart
+        | undefined
+      const text = textPart?.text?.trim()
+      if (!text) return
+      const title = text.length > 50 ? text.slice(0, 50) + "..." : text
+      return Session.update(
+        input.session.id,
+        (draft) => {
+          draft.title = title
+        },
+        { touch: false },
+      )
+    }
+    const agent = await Agent.get(titleAgent)
     if (!agent) return
     const model = await iife(async () => {
       if (agent.model) return await Provider.getModel(agent.model.providerID, agent.model.modelID)
