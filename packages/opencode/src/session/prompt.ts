@@ -1070,7 +1070,7 @@ export namespace SessionPrompt {
                 ]
               }
               break
-            case "file:": {
+            case "file:":
               log.info("file", { mime: part.mime })
               // have to normalize, symbol search returns absolute paths
               // Decode the pathname since URL constructor doesn't automatically decode it
@@ -1255,7 +1255,6 @@ export namespace SessionPrompt {
                   source: part.source,
                 },
               ]
-            }
           }
         }
 
