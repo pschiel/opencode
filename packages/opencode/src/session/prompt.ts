@@ -655,7 +655,10 @@ export namespace SessionPrompt {
         agent,
         abort,
         sessionID,
-        system,
+        system: [
+          ...(await SystemPrompt.environment(model, agent.options)),
+          ...(agent.options?.system?.agents_md == false ? [] : await InstructionPrompt.system())
+        ],
         messages: [
           ...MessageV2.toModelMessages(sessionMessages, model),
           ...(isLastStep
@@ -1916,7 +1919,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const hasOnlySubtaskParts = subtaskParts.length > 0 && firstRealUser.parts.every((p) => p.type === "subtask")
 
     const msgAgent = await Agent.get(firstRealUser.info.agent)
-    const titleAgent = msgAgent.options.agents?.title ?? "title"
+    const titleAgent = msgAgent.options.subagents?.title ?? "title"
     if (titleAgent === "none") {
       const textPart = firstRealUser.parts.find((part) => part.type === "text" && !part.synthetic) as
         | MessageV2.TextPart

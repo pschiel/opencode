@@ -47,7 +47,7 @@ export const TaskTool = Tool.define("task", async (ctx) => {
 
       // Resolve subagent type through calling agent's mapping
       const callingAgent = ctx.agent ? await Agent.get(ctx.agent) : undefined
-      const resolvedSubagentType = callingAgent?.options.agents?.[params.subagent_type] ?? params.subagent_type
+      const resolvedSubagentType = callingAgent?.options.subagents?.[params.subagent_type] ?? params.subagent_type
 
       // Skip permission check when user explicitly invoked via @ or command subtask
       if (!ctx.extra?.bypassAgentCheck) {
