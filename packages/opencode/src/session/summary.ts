@@ -133,7 +133,7 @@ export namespace SessionSummary {
     const textPart = msgWithParts.parts.find((p) => p.type === "text" && !p.synthetic) as MessageV2.TextPart
     if (textPart && !userMsg.summary?.title) {
       const msgAgent = await Agent.get(userMsg.agent)
-      const titleAgent = msgAgent.options.agents?.title ?? "title"
+      const titleAgent = msgAgent.options.subagents?.title ?? "title"
       if (titleAgent === "none") {
         const title = textPart.text.length > 50 ? textPart.text.slice(0, 50) + "..." : textPart.text
         userMsg.summary.title = title
