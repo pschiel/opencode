@@ -1037,6 +1037,17 @@ export namespace Provider {
             method: opts.method ?? "GET",
           }
 
+          const requestRaw: any = {
+            type: "REQUEST",
+            requestId,
+            provider: model.providerID,
+            model: model.id,
+            url,
+            method: opts.method ?? "GET",
+            headers: opts.headers,
+            body: opts.body,
+          }
+
           // Parse and filter the request body
           if (opts.body) {
             try {
@@ -1088,6 +1099,7 @@ export namespace Provider {
           }
 
           await Log.logRequest(requestData)
+          await Log.logRequestRaw(requestRaw)
         }
 
         try {
@@ -1109,6 +1121,18 @@ export namespace Provider {
               url,
               status: response.status,
               duration: Date.now() - startTime,
+            }
+
+            const responseRaw: any = {
+              type: "RESPONSE",
+              requestId,
+              provider: model.providerID,
+              model: model.id,
+              url,
+              status: response.status,
+              duration: Date.now() - startTime,
+              headers: Object.fromEntries(response.headers.entries()),
+              body: responseText,
             }
 
             // Parse and extract useful information from response
@@ -1200,6 +1224,7 @@ export namespace Provider {
             }
 
             await Log.logRequest(responseData)
+            await Log.logRequestRaw(responseRaw)
           }
 
           return response
@@ -1215,7 +1240,17 @@ export namespace Provider {
               error: error instanceof Error ? error.message : String(error),
               duration: Date.now() - startTime,
             }
+            const errorRaw = {
+              type: "ERROR",
+              requestId,
+              provider: model.providerID,
+              model: model.id,
+              url,
+              error: error instanceof Error ? error.message : String(error),
+              duration: Date.now() - startTime,
+            }
             await Log.logRequest(errorData)
+            await Log.logRequestRaw(errorRaw)
           }
           throw error
         }

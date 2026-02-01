@@ -2,6 +2,7 @@ import path from "path"
 import fs from "fs/promises"
 import fsSync from "fs"
 import { Global } from "../global"
+import { iife } from "./iife"
 import z from "zod"
 
 export namespace Log {
@@ -66,6 +67,14 @@ export namespace Log {
     return 0
   }
 
+  let requestRawLogPath = ""
+  export function requestRawFile() {
+    return requestRawLogPath
+  }
+  let requestRawWrite = (msg: string): number | Promise<number> => {
+    return 0
+  }
+
   export async function init(options: Options) {
     if (options.level) level = options.level
     cleanup(Global.Path.log)
@@ -89,13 +98,28 @@ export namespace Log {
         Global.Path.log,
         options.dev ? "dev.request.log" : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".request.log",
       )
+      requestRawLogPath = path.join(
+        Global.Path.log,
+        options.dev
+          ? "dev.request.raw.jsonl"
+          : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".request.raw.jsonl",
+      )
       // Create the file initially
       await fs.writeFile(requestLogPath, "").catch(() => {})
+      await fs.writeFile(requestRawLogPath, "").catch(() => {})
 
       // Use SYNCHRONOUS file appending to ensure writes complete before process exit
       requestWrite = (msg: any) => {
         try {
           fsSync.appendFileSync(requestLogPath, msg)
+          return msg.length
+        } catch (e) {
+          return 0
+        }
+      }
+      requestRawWrite = (msg: string) => {
+        try {
+          fsSync.appendFileSync(requestRawLogPath, msg)
           return msg.length
         } catch (e) {
           return 0
@@ -184,6 +208,24 @@ export namespace Log {
     requestWrite(formatRequestLog(data))
   }
 
+  export async function logRequestRaw(data: unknown) {
+    if (!requestLogEnabled) return
+    const text = iife(() => {
+      const seen = new WeakSet()
+      const json = JSON.stringify(data, (_key, value) => {
+        if (typeof value === "bigint") return value.toString()
+        if (typeof value === "object" && value !== null) {
+          if (seen.has(value)) return "[circular]"
+          seen.add(value)
+        }
+        return value
+      })
+      if (json !== undefined) return json
+      return "null"
+    })
+    requestRawWrite(text + "\n")
+  }
+
   export async function flushRequestLog() {
     // No-op since we're using synchronous writes
   }
@@ -191,6 +233,7 @@ export namespace Log {
   async function cleanup(dir: string) {
     const glob = new Bun.Glob("????-??-??T??????.log")
     const requestGlob = new Bun.Glob("????-??-??T??????.request.log")
+    const requestRawGlob = new Bun.Glob("????-??-??T??????.request.raw.jsonl")
     const files = await Array.fromAsync(
       glob.scan({
         cwd: dir,
@@ -203,12 +246,22 @@ export namespace Log {
         absolute: true,
       }),
     )
+    const requestRawFiles = await Array.fromAsync(
+      requestRawGlob.scan({
+        cwd: dir,
+        absolute: true,
+      }),
+    )
     if (files.length > 5) {
       const filesToDelete = files.slice(0, -10)
       await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
     }
     if (requestFiles.length > 5) {
       const filesToDelete = requestFiles.slice(0, -10)
+      await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
+    }
+    if (requestRawFiles.length > 5) {
+      const filesToDelete = requestRawFiles.slice(0, -10)
       await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
     }
   }
