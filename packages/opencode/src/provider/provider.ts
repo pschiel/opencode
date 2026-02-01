@@ -1005,8 +1005,7 @@ export namespace Provider {
 
         const url = typeof input === "string" ? input : input.url
 
-        // Generate request ID for correlating request/response
-        const requestId = Math.random().toString(36).substring(2, 8)
+        const requestId = Math.random().toString(36).substring(2, 15)
 
         // Strip openai itemId metadata following what codex does
         // Codex uses #[serde(skip_serializing)] on id fields for all item types:
@@ -1065,9 +1064,8 @@ export namespace Provider {
                   if (typeof msg.content === "string") {
                     content = msg.content
                   } else if (Array.isArray(msg.content)) {
-                    // Multi-part content (text + images, etc)
                     const textPart = msg.content.find((p: any) => p.type === "text" || p.text)
-                    content = textPart ? textPart.text || textPart.content || "[complex content]" : "[complex content]"
+                    content = textPart?.text ?? textPart?.content ?? "[complex content]"
                   } else {
                     content = "[complex content]"
                   }
@@ -1076,12 +1074,11 @@ export namespace Provider {
                 })
               }
 
-              // Summarize tools if present
               if (body.tools && Array.isArray(body.tools)) {
                 filteredBody.tools_count = body.tools.length
                 filteredBody.tools_summary = body.tools
                   .map((t: any) => t.function?.name || t.name)
-                  .filter(Boolean)
+                  .filter((name: any): name is string => typeof name === "string" && name.length > 0)
                   .join(", ")
               }
 
@@ -1240,17 +1237,8 @@ export namespace Provider {
               error: error instanceof Error ? error.message : String(error),
               duration: Date.now() - startTime,
             }
-            const errorRaw = {
-              type: "ERROR",
-              requestId,
-              provider: model.providerID,
-              model: model.id,
-              url,
-              error: error instanceof Error ? error.message : String(error),
-              duration: Date.now() - startTime,
-            }
             await Log.logRequest(errorData)
-            await Log.logRequestRaw(errorRaw)
+            await Log.logRequestRaw(errorData)
           }
           throw error
         }
