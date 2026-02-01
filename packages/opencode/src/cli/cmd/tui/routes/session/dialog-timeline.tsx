@@ -1,11 +1,112 @@
 import { createMemo, onMount } from "solid-js"
 import { useSync } from "@tui/context/sync"
-import { DialogSelect, type DialogSelectOption } from "@tui/ui/dialog-select"
-import type { TextPart } from "@opencode-ai/sdk/v2"
+import { DialogSelect, type DialogSelectOption, type DialogSelectRef } from "@tui/ui/dialog-select"
+import type { Part, Message, AssistantMessage, ToolPart, FilePart } from "@opencode-ai/sdk/v2"
 import { Locale } from "@/util/locale"
 import { DialogMessage } from "./dialog-message"
+import { DialogInspect } from "./dialog-inspect"
 import { useDialog } from "../../ui/dialog"
 import type { PromptInfo } from "../../component/prompt/history"
+import { Token } from "@/util/token"
+import { useTheme } from "@tui/context/theme"
+import fs from "fs"
+import path from "path"
+import { produce } from "solid-js/store"
+import { Binary } from "@opencode-ai/util/binary"
+import { Global } from "@/global"
+import { useToast } from "../../ui/toast"
+
+// Module-level variable to store the selected message when opening details
+let timelineSelection: string | undefined
+
+function formatTokenCount(tokens: number): string {
+  return tokens.toString().padStart(8)
+}
+
+function getMessageTokens(message: Message, parts: Part[], isCompaction: boolean = false): number {
+  if (message.role === "assistant") {
+    const assistantMsg = message as AssistantMessage
+    let total = 0
+
+    // Tokens used by this message = input + output + reasoning + cache writes (PURE API DATA)
+    if (assistantMsg.tokens) {
+      const input = assistantMsg.tokens.input || 0
+      const output = assistantMsg.tokens.output || 0
+      const cacheWrite = assistantMsg.tokens.cache?.write || 0
+      const reasoning = assistantMsg.tokens.reasoning || 0
+      total = input + output + cacheWrite + reasoning
+    } else {
+      // Fall back to aggregating from step-finish parts
+      for (const part of parts) {
+        if (part.type === "step-finish" && (part as any).tokens) {
+          const tokens = (part as any).tokens
+          total += tokens.input + tokens.output + (tokens.reasoning || 0)
+        }
+      }
+    }
+
+    // NO LONGER add tool output tokens to the total
+    return total
+  }
+
+  // User message - estimate from parts
+  let estimate = 0
+  for (const part of parts) {
+    if (part.type === "text" && !part.synthetic && !part.ignored) {
+      estimate += Token.estimate(part.text)
+    }
+    if (part.type === "file") {
+      const filePart = part as FilePart
+      if (filePart.source?.text?.value) {
+        estimate += Token.estimate(filePart.source.text.value)
+      } else if (filePart.mime.startsWith("image/")) {
+        estimate += Token.estimateImage(filePart.url)
+      }
+    }
+  }
+  return estimate
+}
+
+function getToolOutputEstimate(parts: Part[]): number {
+  let estimate = 0
+  for (const part of parts) {
+    if (part.type === "tool") {
+      const toolPart = part as ToolPart
+      const state = toolPart.state as any
+      if (state?.output) {
+        const output = typeof state.output === "string" ? state.output : JSON.stringify(state.output)
+        estimate += Token.estimate(output)
+      }
+    }
+  }
+  return estimate
+}
+
+function getMessageSummary(parts: Part[]): string {
+  const textPart = parts.find((x) => x.type === "text" && !x.synthetic && !x.ignored)
+  if (textPart && textPart.type === "text") {
+    return textPart.text.replace(/\n/g, " ").trim()
+  }
+
+  const toolParts = parts.filter((x) => x.type === "tool") as ToolPart[]
+  if (toolParts.length > 0) {
+    const tools = toolParts.map((p) => p.tool).join(", ")
+    return `[${tools}]`
+  }
+
+  const reasoningParts = parts.filter((x) => x.type === "reasoning")
+  if (reasoningParts.length > 0) {
+    return "[thinking]"
+  }
+
+  const fileParts = parts.filter((x) => x.type === "file") as FilePart[]
+  if (fileParts.length > 0) {
+    const files = fileParts.map((p) => p.filename || "file").join(", ")
+    return `[files: ${files}]`
+  }
+
+  return "[no content]"
+}
 
 export function DialogTimeline(props: {
   sessionID: string
@@ -14,24 +115,100 @@ export function DialogTimeline(props: {
 }) {
   const sync = useSync()
   const dialog = useDialog()
+  const { theme } = useTheme()
+  const toast = useToast()
+
+  // Capture the stored selection and clear it
+  const initialSelection = timelineSelection
+  timelineSelection = undefined
+
+  let selectRef: DialogSelectRef<string> | undefined
 
   onMount(() => {
     dialog.setSize("large")
+
+    // Restore selection after mount if we have one
+    if (initialSelection && selectRef) {
+      setTimeout(() => {
+        selectRef?.moveToValue(initialSelection)
+      }, 0)
+    }
   })
 
   const options = createMemo((): DialogSelectOption<string>[] => {
     const messages = sync.data.message[props.sessionID] ?? []
     const result = [] as DialogSelectOption<string>[]
     for (const message of messages) {
-      if (message.role !== "user") continue
-      const part = (sync.data.part[message.id] ?? []).find(
-        (x) => x.type === "text" && !x.synthetic && !x.ignored,
-      ) as TextPart
-      if (!part) continue
+      const parts = sync.data.part[message.id] ?? []
+
+      // Check if this is a compaction summary message
+      const isCompactionSummary = message.role === "assistant" && (message as AssistantMessage).summary === true
+
+      // Get the token count for this specific message (delta only, not cumulative)
+      const messageTokens = getMessageTokens(message, parts, isCompactionSummary)
+
+      // Add tool estimation for assistant messages
+      const toolEstimate = message.role === "assistant" ? getToolOutputEstimate(parts) : 0
+      const delta = messageTokens + toolEstimate
+
+      // Format with ~ included in padding if needed
+      const hasEstimate = toolEstimate > 0
+      const formatted = hasEstimate ? ("~" + delta.toString()).padStart(8) : formatTokenCount(delta)
+
+      // Token count color based on thresholds (cold to hot gradient)
+      // Using delta for color coding
+      let tokenColor = theme.textMuted // grey < 1k
+      if (delta >= 20000) {
+        tokenColor = theme.error // red 20k+
+      } else if (delta >= 10000) {
+        tokenColor = theme.warning // orange 10k+
+      } else if (delta >= 5000) {
+        tokenColor = theme.accent // purple 5k+
+      } else if (delta >= 2000) {
+        tokenColor = theme.secondary // blue 2k+
+      } else if (delta >= 1000) {
+        tokenColor = theme.info // cyan 1k+
+      }
+
+      const summary = getMessageSummary(parts)
+
+      // Skip messages with no content
+      if (summary === "[no content]") continue
+
+      // Debug: Extract token breakdown for assistant messages
+      let tokenDebug = ""
+      if (message.role === "assistant") {
+        const assistantMsg = message as AssistantMessage
+        if (assistantMsg.tokens) {
+          const input = assistantMsg.tokens.input || 0
+          const output = assistantMsg.tokens.output || 0
+          const reasoning = assistantMsg.tokens.reasoning || 0
+          const cacheWrite = assistantMsg.tokens.cache?.write || 0
+          const cacheRead = assistantMsg.tokens.cache?.read || 0
+          const toolEstimate = getToolOutputEstimate(parts)
+          tokenDebug = `(${input}/${output}/${reasoning}/${cacheWrite}/${cacheRead}${toolEstimate > 0 ? `/~${toolEstimate}` : ""}) `
+        }
+      }
+
+      const prefix = isCompactionSummary ? "[compaction] " : message.role === "assistant" ? "agent: " : ""
+      const title = tokenDebug + prefix + summary
+
+      // Add ~ prefix for user messages (estimates only), keeping same width
+      const isUser = message.role === "user"
+      const tokenDisplay = isUser ? ("~" + delta.toString()).padStart(8) : formatted
+      const gutter = <text fg={tokenColor}>[{tokenDisplay}]</text>
+
+      // Normal assistant messages use textMuted for title
+      const isAssistant = message.role === "assistant" && !isCompactionSummary
+
       result.push({
-        title: part.text.replace(/\n/g, " "),
+        title,
+        gutter: isCompactionSummary ? <text fg={theme.success}>[{tokenDisplay}]</text> : gutter,
         value: message.id,
         footer: Locale.time(message.time.created),
+        titleColor: isCompactionSummary ? theme.success : isAssistant ? theme.textMuted : undefined,
+        footerColor: isCompactionSummary ? theme.success : undefined,
+        bg: isCompactionSummary ? theme.success : undefined,
         onSelect: (dialog) => {
           dialog.replace(() => (
             <DialogMessage messageID={message.id} sessionID={props.sessionID} setPrompt={props.setPrompt} />
@@ -43,5 +220,130 @@ export function DialogTimeline(props: {
     return result
   })
 
-  return <DialogSelect onMove={(option) => props.onMove(option.value)} title="Timeline" options={options()} />
+  const handleDelete = async (messageID: string) => {
+    try {
+      const storageBase = path.join(Global.Path.data, "storage")
+
+      // Delete message file
+      const messagePath = path.join(storageBase, "message", props.sessionID, `${messageID}.json`)
+      if (fs.existsSync(messagePath)) {
+        fs.unlinkSync(messagePath)
+      }
+
+      // Delete all part files
+      const partsDir = path.join(storageBase, "part", messageID)
+      if (fs.existsSync(partsDir)) {
+        const partFiles = fs.readdirSync(partsDir)
+        for (const file of partFiles) {
+          fs.unlinkSync(path.join(partsDir, file))
+        }
+        fs.rmdirSync(partsDir)
+      }
+
+      // Invalidate session cache by setting the flag in storage
+      const sessionPath = path.join(
+        storageBase,
+        "session",
+        "project_" + sync.data.session.find((s) => s.id === props.sessionID)?.projectID || "",
+        `${props.sessionID}.json`,
+      )
+      if (fs.existsSync(sessionPath)) {
+        const sessionData = JSON.parse(fs.readFileSync(sessionPath, "utf-8"))
+        sessionData.cacheInvalidated = true
+        fs.writeFileSync(sessionPath, JSON.stringify(sessionData, null, 2))
+      }
+
+      // Update the UI store to remove the message
+      const messages = sync.data.message[props.sessionID] ?? []
+      const result = Binary.search(messages, messageID, (m) => m.id)
+      if (result.found) {
+        sync.set(
+          "message",
+          props.sessionID,
+          produce((draft) => {
+            draft.splice(result.index, 1)
+          }),
+        )
+      }
+
+      // Also remove parts from UI
+      sync.set("part", messageID, [])
+
+      // Update session in UI store to reflect cache invalidation
+      const sessionIndex = sync.data.session.findIndex((s) => s.id === props.sessionID)
+      if (sessionIndex >= 0) {
+        sync.set("session", sessionIndex, "cacheInvalidated", true)
+      }
+
+      toast.show({ message: "Message deleted successfully", variant: "success" })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete message"
+      toast.show({ message, variant: "error" })
+    }
+  }
+
+  return (
+    <DialogSelect
+      ref={(r) => {
+        selectRef = r
+      }}
+      onMove={(option) => props.onMove(option.value)}
+      title="Timeline|(input/output/reason/write/read/tool)"
+      options={options()}
+      keybind={[
+        {
+          keybind: { name: "n", ctrl: false, meta: true, shift: false, leader: false },
+          title: "Next user",
+          onTrigger: (option) => {
+            const currentIdx = options().findIndex((opt) => opt.value === option.value)
+            for (let i = currentIdx + 1; i < options().length; i++) {
+              const msgID = options()[i].value
+              const msg = sync.data.message[props.sessionID]?.find((m) => m.id === msgID)
+              if (msg && msg.role === "user") {
+                selectRef?.moveToValue(msgID)
+                break
+              }
+            }
+          },
+        },
+        {
+          keybind: { name: "p", ctrl: false, meta: true, shift: false, leader: false },
+          title: "Previous user",
+          onTrigger: (option) => {
+            const currentIdx = options().findIndex((opt) => opt.value === option.value)
+            for (let i = currentIdx - 1; i >= 0; i--) {
+              const msgID = options()[i].value
+              const msg = sync.data.message[props.sessionID]?.find((m) => m.id === msgID)
+              if (msg && msg.role === "user") {
+                selectRef?.moveToValue(msgID)
+                break
+              }
+            }
+          },
+        },
+        {
+          keybind: { name: "delete", ctrl: false, meta: false, shift: false, leader: false },
+          title: "Delete",
+          onTrigger: (option) => {
+            handleDelete(option.value)
+          },
+        },
+        {
+          keybind: { name: "insert", ctrl: false, meta: false, shift: false, leader: false },
+          title: "Details",
+          onTrigger: (option) => {
+            const messageID = option.value
+            const message = sync.data.message[props.sessionID]?.find((m) => m.id === messageID)
+            const parts = sync.data.part[messageID] ?? []
+
+            if (message && message.role === "assistant") {
+              // Store the current selection before opening details
+              timelineSelection = messageID
+              dialog.push(() => <DialogInspect message={message as AssistantMessage} parts={parts} />)
+            }
+          },
+        },
+      ]}
+    />
+  )
 }

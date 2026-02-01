@@ -30,6 +30,8 @@ import { Prompt, type PromptRef } from "@tui/component/prompt"
 import type { AssistantMessage, Part, ToolPart, UserMessage, TextPart, ReasoningPart } from "@opencode-ai/sdk/v2"
 import { useLocal } from "@tui/context/local"
 import { Locale } from "@/util/locale"
+import { Log } from "@/util/log"
+import { Token } from "@/util/token"
 import type { Tool } from "@/tool/tool"
 import type { ReadTool } from "@/tool/read"
 import type { WriteTool } from "@/tool/write"
@@ -57,6 +59,7 @@ import type { PromptInfo } from "../../component/prompt/history"
 import { DialogConfirm } from "@tui/ui/dialog-confirm"
 import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
+import { DialogInspect } from "./dialog-inspect"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import { Flag } from "@/flag/flag"
@@ -1053,6 +1056,11 @@ export function Session() {
                         last={lastAssistant()?.id === message.id}
                         message={message as AssistantMessage}
                         parts={sync.data.part[message.id] ?? []}
+                        next={
+                          messages()
+                            .slice(index() + 1)
+                            .find((x) => x.role === "assistant") as AssistantMessage | undefined
+                        }
                       />
                     </Match>
                   </Switch>
@@ -1130,77 +1138,115 @@ function UserMessage(props: {
 }) {
   const ctx = use()
   const local = useLocal()
-  const text = createMemo(() => props.parts.flatMap((x) => (x.type === "text" && !x.synthetic ? [x] : []))[0])
-  const files = createMemo(() => props.parts.flatMap((x) => (x.type === "file" ? [x] : [])))
   const sync = useSync()
   const { theme } = useTheme()
+  const dialog = useDialog()
   const [hover, setHover] = createSignal(false)
+  const [tokenHover, setTokenHover] = createSignal(false)
+
+  const liveParts = createMemo(() => sync.data.part[props.message.id] ?? props.parts)
+  const text = createMemo(() => liveParts().flatMap((x) => (x.type === "text" && !x.synthetic ? [x] : []))[0])
+  const files = createMemo(() => liveParts().flatMap((x) => (x.type === "file" ? [x] : [])))
+
   const queued = createMemo(() => props.pending && props.message.id > props.pending)
   const color = createMemo(() => (queued() ? theme.accent : local.agent.color(props.message.agent)))
   const metadataVisible = createMemo(() => queued() || ctx.showTimestamps())
 
-  const compaction = createMemo(() => props.parts.find((x) => x.type === "compaction"))
+  const compaction = createMemo(() => liveParts().find((x) => x.type === "compaction"))
+
+  const tokenTotal = createMemo(() => {
+    const parts = liveParts()
+    let estimate = 0
+    for (const part of parts) {
+      if (part.type === "text" && !part.synthetic && !part.ignored) {
+        estimate += Token.estimate(part.text)
+      }
+      if (part.type === "file") {
+        const filePart = part as any
+        if (filePart.source?.text?.value) {
+          estimate += Token.estimate(filePart.source.text.value)
+        } else if (filePart.mime.startsWith("image/")) {
+          estimate += Token.estimateImage(filePart.url)
+        }
+      }
+    }
+    return estimate
+  })
 
   return (
     <>
       <Show when={text()}>
-        <box
-          id={props.message.id}
-          border={["left"]}
-          borderColor={color()}
-          customBorderChars={SplitBorder.customBorderChars}
-          marginTop={props.index === 0 ? 0 : 1}
-        >
-          <box
-            onMouseOver={() => {
-              setHover(true)
-            }}
-            onMouseOut={() => {
-              setHover(false)
-            }}
-            onMouseUp={props.onMouseUp}
-            paddingTop={1}
-            paddingBottom={1}
-            paddingLeft={2}
-            backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
-            flexShrink={0}
-          >
-            <text fg={theme.text}>{text()?.text}</text>
-            <Show when={files().length}>
-              <box flexDirection="row" paddingBottom={metadataVisible() ? 1 : 0} paddingTop={1} gap={1} flexWrap="wrap">
-                <For each={files()}>
-                  {(file) => {
-                    const bg = createMemo(() => {
-                      if (file.mime.startsWith("image/")) return theme.accent
-                      if (file.mime === "application/pdf") return theme.primary
-                      return theme.secondary
-                    })
-                    return (
-                      <text fg={theme.text}>
-                        <span style={{ bg: bg(), fg: theme.background }}> {MIME_BADGE[file.mime] ?? file.mime} </span>
-                        <span style={{ bg: theme.backgroundElement, fg: theme.textMuted }}> {file.filename} </span>
-                      </text>
-                    )
-                  }}
-                </For>
-              </box>
-            </Show>
-            <Show
-              when={queued()}
-              fallback={
-                <Show when={ctx.showTimestamps()}>
-                  <text fg={theme.textMuted}>
-                    <span style={{ fg: theme.textMuted }}>
-                      {Locale.todayTimeOrDateTime(props.message.time.created)}
-                    </span>
-                  </text>
-                </Show>
-              }
+        <box id={props.message.id} flexDirection="column" marginTop={props.index === 0 ? 0 : 1}>
+          <box border={["left"]} borderColor={color()} customBorderChars={SplitBorder.customBorderChars}>
+            <box
+              onMouseOver={() => {
+                setHover(true)
+              }}
+              onMouseOut={() => {
+                setHover(false)
+              }}
+              onMouseUp={props.onMouseUp}
+              paddingTop={1}
+              paddingBottom={1}
+              paddingLeft={2}
+              backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
+              flexShrink={0}
             >
-              <text fg={theme.textMuted}>
-                <span style={{ bg: theme.accent, fg: theme.backgroundPanel, bold: true }}> QUEUED </span>
+              <text fg={theme.text}>{text()?.text}</text>
+              <Show when={files().length}>
+                <box
+                  flexDirection="row"
+                  paddingBottom={metadataVisible() ? 1 : 0}
+                  paddingTop={1}
+                  gap={1}
+                  flexWrap="wrap"
+                >
+                  <For each={files()}>
+                    {(file) => {
+                      const bg = createMemo(() => {
+                        if (file.mime.startsWith("image/")) return theme.accent
+                        if (file.mime === "application/pdf") return theme.primary
+                        return theme.secondary
+                      })
+                      return (
+                        <text fg={theme.text}>
+                          <span style={{ bg: bg(), fg: theme.background }}> {MIME_BADGE[file.mime] ?? file.mime} </span>
+                          <span style={{ bg: theme.backgroundElement, fg: theme.textMuted }}> {file.filename} </span>
+                        </text>
+                      )
+                    }}
+                  </For>
+                </box>
+              </Show>
+              <Show
+                when={queued()}
+                fallback={
+                  <Show when={ctx.showTimestamps()}>
+                    <text fg={theme.textMuted}>
+                      <span style={{ fg: theme.textMuted }}>
+                        {Locale.todayTimeOrDateTime(props.message.time.created)}
+                      </span>
+                    </text>
+                  </Show>
+                }
+              >
+                <text fg={theme.textMuted}>
+                  <span style={{ bg: theme.accent, fg: theme.backgroundPanel, bold: true }}> QUEUED </span>
+                </text>
+              </Show>
+            </box>
+          </box>
+          <box flexDirection="row" gap={1} justifyContent="flex-end">
+            <box
+              onMouseOver={() => setTokenHover(true)}
+              onMouseOut={() => setTokenHover(false)}
+              onMouseUp={() => dialog.replace(() => <DialogInspect message={props.message} parts={liveParts()} />)}
+              backgroundColor={tokenHover() ? theme.backgroundElement : undefined}
+            >
+              <text>
+                <span style={{ fg: theme.textMuted }}>~{tokenTotal().toLocaleString()}</span>
               </text>
-            </Show>
+            </box>
           </box>
         </box>
       </Show>
@@ -1217,11 +1263,30 @@ function UserMessage(props: {
   )
 }
 
-function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
+function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean; next?: AssistantMessage }) {
   const local = useLocal()
   const { theme } = useTheme()
+  const ctx = use()
   const sync = useSync()
+  const log = Log.create({ service: "session" })
   const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
+  const liveMessage = createMemo(
+    () => messages().find((x) => x.id === props.message.id) as AssistantMessage | undefined,
+  )
+  const liveParts = createMemo(() => sync.data.part[props.message.id] ?? props.parts)
+  const isVisiblePart = (part: Part) => {
+    if (part.type === "text") return part.text.trim().length > 0
+    if (part.type === "reasoning") return ctx.showThinking() && part.text.replace("[REDACTED]", "").trim().length > 0
+    if (part.type === "tool") {
+      if (ctx.showDetails()) return true
+      return part.state.status !== "completed"
+    }
+    return false
+  }
+  const visibleParts = createMemo(() => liveParts().some((part) => isVisiblePart(part)))
+  const dialog = useDialog()
+  const [hover, setHover] = createSignal(false)
+  const isLatest = createMemo(() => messages().at(-1)?.id === props.message.id)
 
   const final = createMemo(() => {
     return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
@@ -1235,23 +1300,115 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     return props.message.time.completed - user.time.created
   })
 
+  const tokenTotal = createMemo(() => {
+    const message = liveMessage()
+    if (!message) return 0
+    const parts = liveParts()
+    const base = message.tokens
+      ? (message.tokens.input || 0) +
+        (message.tokens.output || 0) +
+        (message.tokens.reasoning || 0) +
+        (message.tokens.cache?.write || 0)
+      : parts.reduce((sum, part) => {
+          if (part.type !== "step-finish" || !(part as any).tokens) return sum
+          const tokens = (part as any).tokens
+          return sum + tokens.input + tokens.output + (tokens.reasoning || 0)
+        }, 0)
+    const tools = parts.reduce((sum, part) => {
+      if (part.type !== "tool") return sum
+      const state = (part as ToolPart).state as any
+      if (!state?.output) return sum
+      const output = typeof state.output === "string" ? state.output : JSON.stringify(state.output)
+      return sum + Token.estimate(output)
+    }, 0)
+    return base + tools
+  })
+
+  const cacheRead = createMemo(() => liveMessage()?.tokens?.cache?.read ?? 0)
+
+  const showActual = createMemo(() => {
+    if (tokenTotal() <= 0) return false
+    if (final()) return true
+    return props.message.finish === "tool-calls"
+  })
+
+  const estimatedTokens = createMemo(() => {
+    const parts = liveParts()
+    return parts.reduce((sum, part) => {
+      if (part.type === "text" && part.text.trim()) {
+        return sum + Token.estimate(part.text)
+      }
+      if (part.type === "reasoning" && part.text.trim()) {
+        const content = part.text.replace("[REDACTED]", "").trim()
+        if (content) return sum + Token.estimate(content)
+      }
+      if (part.type === "tool") {
+        const state = (part as ToolPart).state as any
+        if (state?.output) {
+          const output = typeof state.output === "string" ? state.output : JSON.stringify(state.output)
+          return sum + Token.estimate(output)
+        }
+      }
+      return sum
+    }, 0)
+  })
+
+  createEffect(() => {
+    if (!isLatest()) return
+    log.info("assistant.tokens", {
+      id: props.message.id,
+      parts: liveParts().length,
+      tokens: tokenTotal(),
+      cacheRead: cacheRead(),
+      estimated: estimatedTokens(),
+    })
+  })
+
   return (
-    <>
-      <For each={props.parts}>
+    <box id={props.message.id} flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1}>
+      <For each={liveParts()}>
         {(part, index) => {
           const component = createMemo(() => PART_MAPPING[part.type as keyof typeof PART_MAPPING])
+          const isLast = createMemo(() => index() === liveParts().length - 1)
           return (
-            <Show when={component()}>
-              <Dynamic
-                last={index() === props.parts.length - 1}
-                component={component()}
-                part={part as any}
-                message={props.message}
-              />
-            </Show>
+            <>
+              <Show when={component()}>
+                <Dynamic last={isLast()} component={component()} part={part as any} message={props.message} />
+              </Show>
+              <Show when={isLast() && visibleParts()}>
+                <box flexDirection="row" gap={1} justifyContent="flex-end">
+                  <box
+                    onMouseOver={() => setHover(true)}
+                    onMouseOut={() => setHover(false)}
+                    onMouseUp={() =>
+                      dialog.replace(() => <DialogInspect message={props.message} parts={liveParts()} />)
+                    }
+                    backgroundColor={hover() ? theme.backgroundElement : undefined}
+                  >
+                    <Show
+                      when={showActual()}
+                      fallback={
+                        <text>
+                          <span style={{ fg: theme.textMuted }}>~{estimatedTokens().toLocaleString()}</span>
+                        </text>
+                      }
+                    >
+                      <text>
+                        <span style={{ fg: theme.textMuted }}>
+                          {props.message.finish === "tool-calls" ? "~" : ""}
+                          {tokenTotal().toLocaleString()}
+                        </span>
+                        <span style={{ fg: theme.textMuted }}> ({cacheRead().toLocaleString()})</span>
+                      </text>
+                    </Show>
+                  </box>
+                </box>
+              </Show>
+            </>
           )
         }}
       </For>
+
       <Show when={props.message.error && props.message.error.name !== "MessageAbortedError"}>
         <box
           border={["left"]}
@@ -1292,7 +1449,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           </box>
         </Match>
       </Switch>
-    </>
+    </box>
   )
 }
 
