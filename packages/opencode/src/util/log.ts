@@ -1,6 +1,8 @@
 import path from "path"
 import fs from "fs/promises"
+import fsSync from "fs"
 import { Global } from "../global"
+import { iife } from "./iife"
 import z from "zod"
 
 export namespace Log {
@@ -44,15 +46,33 @@ export namespace Log {
     print: boolean
     dev?: boolean
     level?: Level
+    requestLog?: boolean
   }
 
   let logpath = ""
   export function file() {
     return logpath
   }
-  let write = (msg: any) => {
+  let write = (msg: any): number | Promise<number> => {
     process.stderr.write(msg)
     return msg.length
+  }
+
+  let requestLogPath = ""
+  let requestLogEnabled = false
+  export function requestFile() {
+    return requestLogPath
+  }
+  let requestWrite = (msg: any): number | Promise<number> => {
+    return 0
+  }
+
+  let requestRawLogPath = ""
+  export function requestRawFile() {
+    return requestRawLogPath
+  }
+  let requestRawWrite = (msg: string): number | Promise<number> => {
+    return 0
   }
 
   export async function init(options: Options) {
@@ -71,20 +91,154 @@ export namespace Log {
       writer.flush()
       return num
     }
+
+    if (options.requestLog) {
+      requestLogEnabled = true
+      requestLogPath = path.join(
+        Global.Path.log,
+        options.dev ? "dev.request.log" : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".request.log",
+      )
+      requestRawLogPath = path.join(
+        Global.Path.log,
+        options.dev
+          ? "dev.request.raw.jsonl"
+          : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".request.raw.jsonl",
+      )
+      await fs.writeFile(requestLogPath, "").catch(() => {})
+      await fs.writeFile(requestRawLogPath, "").catch(() => {})
+
+      requestWrite = (msg: any) => {
+        try {
+          fsSync.appendFileSync(requestLogPath, msg)
+          return msg.length
+        } catch (e) {
+          console.error("Failed to write request log:", e)
+          return 0
+        }
+      }
+      requestRawWrite = (msg: string) => {
+        try {
+          fsSync.appendFileSync(requestRawLogPath, msg)
+          return msg.length
+        } catch (e) {
+          console.error("Failed to write raw request log:", e)
+          return 0
+        }
+      }
+    }
+  }
+
+  export function isRequestLoggingEnabled() {
+    return requestLogEnabled
+  }
+
+  function formatRequestLog(data: any): string {
+    const timestamp = new Date().toISOString()
+    const time = timestamp.substring(11, 19)
+
+    // ANSI color codes
+    const RESET = "\x1b[0m"
+    const BOLD = "\x1b[1m"
+    const DIM = "\x1b[2m"
+    const CYAN = "\x1b[36m"
+    const GREEN = "\x1b[32m"
+    const YELLOW = "\x1b[33m"
+    const RED = "\x1b[31m"
+    const BLUE = "\x1b[34m"
+    const MAGENTA = "\x1b[35m"
+    const GRAY = "\x1b[90m"
+
+    const lines: string[] = []
+    const separator = GRAY + "─".repeat(100) + RESET
+    const requestId = data.requestId ? `${GRAY}[${data.requestId}]${RESET}` : ""
+
+    if (data.type === "REQUEST") {
+      const statusLine = `${CYAN}${BOLD}▶ REQUEST${RESET} ${DIM}${time}${RESET} ${requestId} ${GRAY}|${RESET} ${data.provider}${GRAY}/${RESET}${BLUE}${BOLD}${data.model}${RESET} ${GRAY}|${RESET} ${DIM}${data.url}${RESET}`
+      lines.push(separator)
+      lines.push(statusLine)
+      lines.push("")
+
+      if (data.body?.messages) {
+        for (const msg of data.body.messages) {
+          const roleColor = msg.role === "user" ? GREEN : msg.role === "assistant" ? BLUE : MAGENTA
+          const content = msg.content.trim()
+
+          lines.push(`${roleColor}${BOLD}[${msg.role}]${RESET} ${content}`)
+        }
+      }
+
+      if (data.body?.tools_count) {
+        lines.push(`${DIM}Tools: ${data.body.tools_count} (${data.body.tools_summary})${RESET}`)
+      }
+    } else if (data.type === "RESPONSE") {
+      const statusColor = data.status >= 200 && data.status < 300 ? GREEN : RED
+      const tokenInfo = data.total_tokens
+        ? `${GRAY}|${RESET} Tokens: ${CYAN}${data.input_tokens}${RESET}/${YELLOW}${data.output_tokens}${RESET}=${BOLD}${data.total_tokens}${RESET}`
+        : ""
+
+      const statusLine = `${GREEN}${BOLD}◀ RESPONSE${RESET} ${DIM}${time}${RESET} ${requestId} ${GRAY}|${RESET} ${statusColor}${data.status}${RESET} ${GRAY}|${RESET} ${data.duration}ms ${tokenInfo}`
+      lines.push(separator)
+      lines.push(statusLine)
+      lines.push("")
+
+      if (data.completion) {
+        const modelName = data.model || "model"
+        lines.push(`${BLUE}${BOLD}[${modelName}]${RESET} ${data.completion}`)
+      }
+    } else if (data.type === "ERROR") {
+      const statusLine = `${RED}${BOLD}✖ ERROR${RESET} ${DIM}${time}${RESET} ${requestId} ${GRAY}|${RESET} ${data.provider}${GRAY}/${RESET}${data.model} ${GRAY}|${RESET} ${data.duration}ms`
+      lines.push(separator)
+      lines.push(statusLine)
+      lines.push("")
+      lines.push(`${RED}${data.error}${RESET}`)
+    }
+
+    lines.push("")
+    return lines.join("\n")
+  }
+
+  export async function logRequest(data: any) {
+    if (!requestLogEnabled) return
+    requestWrite(formatRequestLog(data))
+  }
+
+  export async function logRequestRaw(data: unknown) {
+    if (!requestLogEnabled) return
+    const text = iife(() => {
+      const seen = new WeakSet()
+      const json = JSON.stringify(data, (_key, value) => {
+        if (typeof value === "bigint") return value.toString()
+        if (typeof value === "object" && value !== null) {
+          if (seen.has(value)) return "[circular]"
+          seen.add(value)
+        }
+        return value
+      })
+      if (json !== undefined) return json
+      return "null"
+    })
+    requestRawWrite(text + "\n")
+  }
+
+  export async function flushRequestLog() {
+    // No-op since we're using synchronous writes
   }
 
   async function cleanup(dir: string) {
-    const glob = new Bun.Glob("????-??-??T??????.log")
-    const files = await Array.fromAsync(
-      glob.scan({
-        cwd: dir,
-        absolute: true,
-      }),
-    )
-    if (files.length <= 5) return
+    async function cleanupPattern(pattern: string) {
+      const glob = new Bun.Glob(pattern)
+      const files = await Array.fromAsync(glob.scan({ cwd: dir, absolute: true }))
+      if (files.length > 5) {
+        const filesToDelete = files.slice(0, -10)
+        await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
+      }
+    }
 
-    const filesToDelete = files.slice(0, -10)
-    await Promise.all(filesToDelete.map((file) => fs.unlink(file).catch(() => {})))
+    await Promise.all([
+      cleanupPattern("????-??-??T??????.log"),
+      cleanupPattern("????-??-??T??????.request.log"),
+      cleanupPattern("????-??-??T??????.request.raw.jsonl"),
+    ])
   }
 
   function formatError(error: Error, depth = 0): string {

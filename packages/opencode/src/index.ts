@@ -56,6 +56,10 @@ const cli = yargs(hideBin(process.argv))
     type: "string",
     choices: ["DEBUG", "INFO", "WARN", "ERROR"],
   })
+  .option("request-log", {
+    describe: "log provider requests and responses to a separate file",
+    type: "boolean",
+  })
   .middleware(async (opts) => {
     await Log.init({
       print: process.argv.includes("--print-logs"),
@@ -65,6 +69,7 @@ const cli = yargs(hideBin(process.argv))
         if (Installation.isLocal()) return "DEBUG"
         return "INFO"
       })(),
+      requestLog: process.argv.includes("--request-log"),
     })
 
     process.env.AGENT = "1"
@@ -151,6 +156,8 @@ try {
   }
   process.exitCode = 1
 } finally {
+  // Flush any pending request logs before exiting
+  await Log.flushRequestLog()
   // Some subprocesses don't react properly to SIGTERM and similar signals.
   // Most notably, some docker-container-based MCP servers don't handle such signals unless
   // run using `docker run --init`.
