@@ -147,13 +147,12 @@ export function DialogTimeline(props: {
       // Get the token count for this specific message (delta only, not cumulative)
       const messageTokens = getMessageTokens(message, parts, isCompactionSummary)
 
-      // Add tool estimation for assistant messages
+      // Calculate tool estimate for debug display only (not added to total)
       const toolEstimate = message.role === "assistant" ? getToolOutputEstimate(parts) : 0
-      const delta = messageTokens + toolEstimate
+      const delta = messageTokens
 
-      // Format with ~ included in padding if needed
-      const hasEstimate = toolEstimate > 0
-      const formatted = hasEstimate ? ("~" + delta.toString()).padStart(8) : formatTokenCount(delta)
+      // Format token count (no ~ prefix, pure API data)
+      const formatted = formatTokenCount(delta)
 
       // Token count color based on thresholds (cold to hot gradient)
       // Using delta for color coding
@@ -193,9 +192,8 @@ export function DialogTimeline(props: {
       const prefix = isCompactionSummary ? "[compaction] " : message.role === "assistant" ? "agent: " : ""
       const title = tokenDebug + prefix + summary
 
-      // Add ~ prefix for user messages (estimates only), keeping same width
-      const isUser = message.role === "user"
-      const tokenDisplay = isUser ? ("~" + delta.toString()).padStart(8) : formatted
+      // Pure API data display (no ~ prefix for user messages)
+      const tokenDisplay = formatTokenCount(delta)
       const gutter = <text fg={tokenColor}>[{tokenDisplay}]</text>
 
       // Normal assistant messages use textMuted for title

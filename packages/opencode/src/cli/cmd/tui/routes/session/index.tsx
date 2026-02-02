@@ -1314,14 +1314,8 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           const tokens = (part as any).tokens
           return sum + tokens.input + tokens.output + (tokens.reasoning || 0)
         }, 0)
-    const tools = parts.reduce((sum, part) => {
-      if (part.type !== "tool") return sum
-      const state = (part as ToolPart).state as any
-      if (!state?.output) return sum
-      const output = typeof state.output === "string" ? state.output : JSON.stringify(state.output)
-      return sum + Token.estimate(output)
-    }, 0)
-    return base + tools
+    // Pure API data - don't add tool estimate
+    return base
   })
 
   const cacheRead = createMemo(() => liveMessage()?.tokens?.cache?.read ?? 0)
@@ -1394,10 +1388,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
                       }
                     >
                       <text>
-                        <span style={{ fg: theme.textMuted }}>
-                          {props.message.finish === "tool-calls" ? "~" : ""}
-                          {tokenTotal().toLocaleString()}
-                        </span>
+                        <span style={{ fg: theme.textMuted }}>{tokenTotal().toLocaleString()}</span>
                         <span style={{ fg: theme.textMuted }}> ({cacheRead().toLocaleString()})</span>
                       </text>
                     </Show>

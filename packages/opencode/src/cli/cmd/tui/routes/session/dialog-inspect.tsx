@@ -95,7 +95,9 @@ export function DialogInspect(props: DialogInspectProps) {
         }
       : null
 
-  const tokenTotal = tokenFields ? [...tokenFields.line1, ...tokenFields.line2].reduce((s, f) => s + (f.v || 0), 0) : 0
+  const tokenTotal = tokenFields
+    ? [...tokenFields.line1.filter((f) => !f.estimated), ...tokenFields.line2].reduce((s, f) => s + (f.v || 0), 0)
+    : 0
 
   const renderPart = (part: Part) => {
     if (part.type === "text")
@@ -179,7 +181,7 @@ export function DialogInspect(props: DialogInspectProps) {
             </For>
           </box>
           <text fg={theme.accent} marginTop={1}>
-            Total: ~{tokenTotal.toLocaleString()} tokens
+            Total: {tokenTotal.toLocaleString()} tokens
           </text>
         </box>
       </Show>
