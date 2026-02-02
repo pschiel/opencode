@@ -1,5 +1,5 @@
 export namespace Token {
-  const CHARS_PER_TOKEN = 4.0 // approximate average
+  const CHARS_PER_TOKEN = 3.5 // approximate average
 
   export function estimate(input: string) {
     return Math.max(0, Math.round((input || "").length / CHARS_PER_TOKEN))
