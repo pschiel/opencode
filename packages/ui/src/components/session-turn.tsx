@@ -93,6 +93,7 @@ function AssistantMessageItem(props: {
   responsePartId: string | undefined
   hideResponsePart: boolean
   hideReasoning: boolean
+  anchorId?: string
 }) {
   const data = useData()
   const emptyParts: PartType[] = []
@@ -122,7 +123,7 @@ function AssistantMessageItem(props: {
     return parts.filter((part) => part?.id !== responsePartId)
   })
 
-  return <Message message={props.message} parts={filteredParts()} />
+  return <Message message={props.message} parts={filteredParts()} id={props.anchorId} />
 }
 
 export function SessionTurn(
@@ -692,6 +693,7 @@ export function SessionTurn(
                               responsePartId={responsePartId()}
                               hideResponsePart={hideResponsePart()}
                               hideReasoning={!working()}
+                              anchorId={`message-${assistantMessage.id}`}
                             />
                           )}
                         </For>
