@@ -58,7 +58,12 @@ export const SessionRoutes = lazy(() =>
         const sessions: Session.Info[] = []
         const normalizedQueryDir = query.directory ? Filesystem.normalize(query.directory) : undefined
         for await (const session of Session.list()) {
-          if (normalizedQueryDir !== undefined && Filesystem.normalize(session.directory) !== normalizedQueryDir)
+          const normalizedSessionDir = Filesystem.normalize(session.directory)
+          if (
+            normalizedQueryDir !== undefined &&
+            normalizedSessionDir !== normalizedQueryDir &&
+            !Filesystem.contains(normalizedQueryDir, normalizedSessionDir)
+          )
             continue
           if (query.roots && session.parentID) continue
           if (query.start !== undefined && session.time.updated < query.start) continue
