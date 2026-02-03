@@ -20,11 +20,13 @@ export namespace LSPClient {
   const log = Log.create({ service: "lsp.client" })
 
   const progress = new Map<string, Set<string>>()
+  const seen = new Set<string>()
 
   function addProgress(serverID: string, token: string) {
     const set = progress.get(serverID) ?? new Set<string>()
     set.add(token)
     progress.set(serverID, set)
+    seen.add(serverID)
     log.info("progress.add", { serverID, token, count: set.size })
     Bus.publish(LSP.Event.Updated, {})
   }
@@ -40,6 +42,10 @@ export namespace LSPClient {
 
   export function progressCount(serverID: string) {
     return progress.get(serverID)?.size ?? 0
+  }
+
+  export function progressSeen(serverID: string) {
+    return seen.has(serverID)
   }
 
   export type Info = NonNullable<Awaited<ReturnType<typeof create>>>

@@ -192,7 +192,10 @@ export namespace LSP {
           name: x.servers[client.serverID].id,
           root: path.relative(Instance.directory, client.root),
           status: "connected",
-          ready: readiness.get(client.serverID) ?? false,
+          ready:
+            (unsupported.get(client.serverID) ?? false)
+              ? true
+              : (readiness.get(client.serverID) ?? false) || LSPClient.progressSeen(client.serverID),
           busy: LSPClient.progressCount(client.serverID) > 0,
           unsupported: unsupported.get(client.serverID) ?? false,
         })
@@ -238,11 +241,8 @@ export namespace LSP {
         return undefined
       }
 
-      // Mark LSPs without workspace symbol support as ready immediately
-      const noWorkspaceSymbols = ["biome", "prettier", "html", "css", "json"]
-      if (noWorkspaceSymbols.includes(server.id)) {
-        setReady(server.id, true)
-      }
+      // Mark LSPs as ready on startup; symbol readiness will refine later
+      setReady(server.id, true)
 
       const existing = s.clients.find((x) => x.root === root && x.serverID === server.id)
       if (existing) {
