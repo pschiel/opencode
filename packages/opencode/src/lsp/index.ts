@@ -399,7 +399,12 @@ export namespace LSP {
             return []
           }
           const filtered = result.filter((x: LSP.Symbol) => kinds.includes(x.kind))
-          log.info("autocomplete.symbol.response", { query, serverID: client.serverID, count: filtered.length })
+          log.info("autocomplete.symbol.response", {
+            query,
+            serverID: client.serverID,
+            count: filtered.length,
+            sample: filtered.slice(0, 5).map((x) => x.name),
+          })
           setReady(client.serverID, true)
           setUnsupported(client.serverID, false)
           return filtered.slice(0, 10)
