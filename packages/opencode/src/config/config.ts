@@ -1074,6 +1074,12 @@ export namespace Config {
             error: "For custom LSP servers, 'extensions' array is required.",
           },
         ),
+      lsp_warmup: z
+        .object({
+          on_session: z.boolean().optional(),
+          files: z.array(z.string()).optional(),
+        })
+        .optional(),
       instructions: z.array(z.string()).optional().describe("Additional instruction files or patterns to include"),
       layout: Layout.optional().describe("@deprecated Always uses stretch layout."),
       permission: Permission.optional(),

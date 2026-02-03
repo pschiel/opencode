@@ -18,6 +18,25 @@ const DIAGNOSTICS_DEBOUNCE_MS = 150
 export namespace LSPClient {
   const log = Log.create({ service: "lsp.client" })
 
+  const progress = new Map<string, Set<string>>()
+
+  function addProgress(serverID: string, token: string) {
+    const set = progress.get(serverID) ?? new Set<string>()
+    set.add(token)
+    progress.set(serverID, set)
+  }
+
+  function removeProgress(serverID: string, token: string) {
+    const set = progress.get(serverID)
+    if (!set) return
+    set.delete(token)
+    if (set.size === 0) progress.delete(serverID)
+  }
+
+  export function progressCount(serverID: string) {
+    return progress.get(serverID)?.size ?? 0
+  }
+
   export type Info = NonNullable<Awaited<ReturnType<typeof create>>>
 
   export type Diagnostic = VSCodeDiagnostic
@@ -61,8 +80,20 @@ export namespace LSPClient {
       Bus.publish(Event.Diagnostics, { path: filePath, serverID: input.serverID })
     })
     connection.onRequest("window/workDoneProgress/create", (params) => {
+      const token = String((params as { token?: unknown }).token ?? "")
+      if (token) addProgress(input.serverID, token)
       l.info("window/workDoneProgress/create", params)
       return null
+    })
+    connection.onNotification("$/progress", (params) => {
+      const token = String((params as { token?: unknown }).token ?? "")
+      const value = (params as { value?: { kind?: string } }).value
+      if (!token) return
+      if (value?.kind === "end") {
+        removeProgress(input.serverID, token)
+        return
+      }
+      addProgress(input.serverID, token)
     })
     connection.onRequest("workspace/configuration", async () => {
       // Return server initialization options

@@ -1,6 +1,7 @@
 import type { BoxRenderable, TextareaRenderable, KeyEvent, ScrollBoxRenderable } from "@opentui/core"
 import fuzzysort from "fuzzysort"
 import { firstBy } from "remeda"
+import path from "path"
 import { createMemo, createResource, createEffect, onMount, onCleanup, Index, Show, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useSDK } from "@tui/context/sdk"
@@ -60,6 +61,29 @@ export type AutocompleteOption = {
   isDirectory?: boolean
   onSelect?: () => void
   path?: string
+}
+
+function symbolKind(kind: number) {
+  if (kind === 5) return "Class"
+  if (kind === 6) return "Method"
+  if (kind === 11) return "Interface"
+  if (kind === 12) return "Function"
+  if (kind === 13) return "Variable"
+  if (kind === 14) return "Constant"
+  if (kind === 23) return "Struct"
+  if (kind === 10) return "Enum"
+  return "Symbol"
+}
+
+function uriToRelative(uri: string) {
+  if (!uri.startsWith("file:")) return
+  let absolute = decodeURIComponent(new URL(uri).pathname)
+  if (absolute.match(/^\/[A-Za-z]:\//)) {
+    absolute = absolute.slice(1)
+  }
+  const relative = path.relative(process.cwd(), absolute)
+  if (!relative) return
+  return relative.split(path.sep).join("/")
 }
 
 export function Autocomplete(props: {
@@ -137,6 +161,13 @@ export function Autocomplete(props: {
   createEffect(() => {
     const next = filter()
     setSearch(next ? next : "")
+  })
+
+  const [lspTick, setLspTick] = createSignal(0)
+  createEffect(() => {
+    if (store.visible !== "@") return
+    const interval = setInterval(() => setLspTick((tick) => tick + 1), 500)
+    onCleanup(() => clearInterval(interval))
   })
 
   // When the filter changes due to how TUI works, the mousemove might still be triggered
@@ -293,6 +324,114 @@ export function Autocomplete(props: {
     },
   )
 
+  const [symbols, { refetch: refetchSymbols }] = createResource(
+    () => search(),
+    async (query) => {
+      if (!store.visible || store.visible === "/") return []
+      const needle = query?.trim()
+      if (!needle) return []
+
+      const primary = await sdk.client.find.symbols({ query: needle }).catch(() => ({ data: [] }))
+      const fallbackQuery = needle.length > 2 ? needle.slice(0, 3) : ""
+      const fallback =
+        !primary.data?.length && fallbackQuery
+          ? await sdk.client.find.symbols({ query: fallbackQuery }).catch(() => ({ data: [] }))
+          : undefined
+      const result = fallback ?? primary
+      const data = result.data ?? []
+
+      if (data.length === 0) return []
+
+      const width = props.anchor().width - 4
+      const options = data.flatMap((item): AutocompleteOption[] => {
+        const relative = uriToRelative(item.location.uri)
+        if (!relative) return []
+        const start = item.location.range.start.line + 1
+        const end = item.location.range.end.line + 1
+        const lineInfo = start === end ? `:${start}` : `:${start}-${end}`
+        const filename = `${relative}#${start}${end !== start ? `-${end}` : ""}`
+        const urlObj = new URL(`file://${process.cwd()}/${relative}`)
+        urlObj.searchParams.set("start", String(start))
+        if (end !== start) {
+          urlObj.searchParams.set("end", String(end))
+        }
+        const label = `${item.name} (${symbolKind(item.kind)}) - ${relative}${lineInfo}`
+        return [
+          {
+            display: Locale.truncateMiddle(label, width),
+            value: item.name,
+            description: relative,
+            onSelect: () => {
+              insertPart(filename, {
+                type: "file",
+                mime: "text/plain",
+                filename,
+                url: urlObj.toString(),
+                source: {
+                  type: "file",
+                  text: {
+                    start: 0,
+                    end: 0,
+                    value: "",
+                  },
+                  path: relative,
+                },
+              })
+            },
+          },
+        ]
+      })
+
+      return options
+    },
+    {
+      initialValue: [],
+    },
+  )
+
+  const [lspStatus] = createResource(
+    () => ({ visible: store.visible, tick: lspTick() }),
+    async (visible) => {
+      if (visible.visible !== "@") return []
+      const result = await sdk.client.lsp.status().catch(() => ({ data: [] }))
+      return result.data ?? []
+    },
+    {
+      initialValue: [],
+    },
+  )
+
+  const [lspKey, setLspKey] = createSignal("")
+  createEffect(() => {
+    if (store.visible !== "@") return
+    const data = lspStatus()
+    const key = data
+      .map((item) => {
+        const ready = (item as { ready?: boolean }).ready === true
+        const busy = (item as { busy?: boolean }).busy === true
+        return `${item.id}:${ready ? "ready" : "loading"}:${busy ? "busy" : "idle"}`
+      })
+      .join(",")
+    if (key === lspKey()) return
+    setLspKey(key)
+    if (!search().trim()) return
+    refetchSymbols()
+  })
+
+  const lspSummary = createMemo(() => {
+    const data = lspStatus().filter((item) => !(item as { unsupported?: boolean }).unsupported)
+    if (!data || data.length === 0) return "LSP: none"
+    const names = data
+      .map((item) => {
+        const ready = (item as { ready?: boolean }).ready === true
+        const busy = (item as { busy?: boolean }).busy === true
+        if (busy) return `${item.id}:indexing`
+        return ready ? `${item.id}:ready` : `${item.id}:loading`
+      })
+      .join(", ")
+    return `LSP: ${names}`
+  })
+
   const mcpResources = createMemo(() => {
     if (!store.visible || store.visible === "/") return []
 
@@ -382,11 +521,14 @@ export function Autocomplete(props: {
 
   const options = createMemo((prev: AutocompleteOption[] | undefined) => {
     const filesValue = files()
+    const symbolsValue = symbols()
     const agentsValue = agents()
     const commandsValue = commands()
 
     const mixed: AutocompleteOption[] =
-      store.visible === "@" ? [...agentsValue, ...(filesValue || []), ...mcpResources()] : [...commandsValue]
+      store.visible === "@"
+        ? [...agentsValue, ...(symbolsValue || []), ...(filesValue || []), ...mcpResources()]
+        : [...commandsValue]
 
     const searchValue = search()
 
@@ -394,7 +536,7 @@ export function Autocomplete(props: {
       return mixed
     }
 
-    if (files.loading && prev && prev.length > 0) {
+    if ((files.loading || symbols.loading) && prev && prev.length > 0) {
       return prev
     }
 
@@ -415,8 +557,12 @@ export function Autocomplete(props: {
         return score * (1 + frecencyScore)
       },
     })
+    const mapped = result.map((arr) => arr.obj)
 
-    return result.map((arr) => arr.obj)
+    if (mapped.length === 0 && symbolsValue && symbolsValue.length > 0) {
+      return symbolsValue
+    }
+    return mapped
   })
 
   createEffect(() => {
@@ -599,10 +745,15 @@ export function Autocomplete(props: {
     const count = options().length || 1
     if (!store.visible) return Math.min(10, count)
     positionTick()
-    return Math.min(10, count, Math.max(1, props.anchor().y))
+    const extraLines = store.visible === "@" ? 3 : 0
+    return Math.min(10, count + extraLines, Math.max(1, props.anchor().y))
   })
 
-  let scroll: ScrollBoxRenderable
+  let scroll: ScrollBoxRenderable | undefined
+  const setScroll = (r: ScrollBoxRenderable | undefined) => {
+    if (!r) return
+    scroll = r
+  }
 
   return (
     <box
@@ -616,11 +767,16 @@ export function Autocomplete(props: {
       borderColor={theme.border}
     >
       <scrollbox
-        ref={(r: ScrollBoxRenderable) => (scroll = r)}
+        ref={setScroll}
         backgroundColor={theme.backgroundMenu}
         height={height()}
         scrollbarOptions={{ visible: false }}
       >
+        <Show when={store.visible === "@"}>
+          <box paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1}>
+            <text fg={theme.textMuted}>{lspSummary()}</text>
+          </box>
+        </Show>
         <Index
           each={options()}
           fallback={
@@ -635,18 +791,6 @@ export function Autocomplete(props: {
               paddingRight={1}
               backgroundColor={index === store.selected ? theme.primary : undefined}
               flexDirection="row"
-              onMouseMove={() => {
-                setStore("input", "mouse")
-              }}
-              onMouseOver={() => {
-                if (store.input !== "mouse") return
-                moveTo(index)
-              }}
-              onMouseDown={() => {
-                setStore("input", "mouse")
-                moveTo(index)
-              }}
-              onMouseUp={() => select()}
             >
               <text fg={index === store.selected ? selectedForeground(theme) : theme.text} flexShrink={0}>
                 {option().display}

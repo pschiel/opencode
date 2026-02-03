@@ -443,6 +443,19 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   type AtOption =
     | { type: "agent"; name: string; display: string }
     | { type: "file"; path: string; display: string; recent?: boolean }
+    | { type: "symbol"; name: string; display: string; path: string; selection: FileSelection }
+
+  const symbolKind = (kind: number) => {
+    if (kind === 5) return "Class"
+    if (kind === 6) return "Method"
+    if (kind === 11) return "Interface"
+    if (kind === 12) return "Function"
+    if (kind === 13) return "Variable"
+    if (kind === 14) return "Constant"
+    if (kind === 23) return "Struct"
+    if (kind === 10) return "Enum"
+    return "Symbol"
+  }
 
   const agentList = createMemo(() =>
     sync.data.agent
@@ -454,14 +467,27 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (!option) return
     if (option.type === "agent") {
       addPart({ type: "agent", name: option.name, content: "@" + option.name, start: 0, end: 0 })
-    } else {
-      addPart({ type: "file", path: option.path, content: "@" + option.path, start: 0, end: 0 })
+      return
     }
+    if (option.type === "symbol") {
+      addPart({
+        type: "file",
+        path: option.path,
+        selection: option.selection,
+        content: "@" + option.path,
+        start: 0,
+        end: 0,
+      })
+      return
+    }
+    addPart({ type: "file", path: option.path, content: "@" + option.path, start: 0, end: 0 })
   }
 
   const atKey = (x: AtOption | undefined) => {
     if (!x) return ""
-    return x.type === "agent" ? `agent:${x.name}` : `file:${x.path}`
+    if (x.type === "agent") return `agent:${x.name}`
+    if (x.type === "symbol") return `symbol:${x.path}:${x.selection.startLine}:${x.selection.endLine}`
+    return `file:${x.path}`
   }
 
   const {
@@ -476,24 +502,62 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       const open = recent()
       const seen = new Set(open)
       const pinned: AtOption[] = open.map((path) => ({ type: "file", path, display: path, recent: true }))
+      const needle = query.trim()
+      const symbolResponse = needle
+        ? await sdk.client.find.symbols({ query: needle }).catch(() => ({ data: [] }))
+        : undefined
+      const symbolOptions: AtOption[] = (symbolResponse?.data ?? []).flatMap((symbol) => {
+        const uri = symbol.location.uri
+        if (!uri.startsWith("file:")) return []
+        let absolute = decodeURIComponent(new URL(uri).pathname)
+        if (absolute.match(/^\/[A-Za-z]:\//)) {
+          absolute = absolute.slice(1)
+        }
+        const root = sdk.directory.endsWith("/") ? sdk.directory : `${sdk.directory}/`
+        if (!absolute.startsWith(root)) return []
+        const path = files.normalize(absolute)
+        if (!path) return []
+        const rawStart = symbol.location.range.start.line + 1
+        const rawEnd = symbol.location.range.end.line + 1
+        const start = Math.min(rawStart, rawEnd)
+        const end = Math.max(rawStart, rawEnd)
+        const kind = symbolKind(symbol.kind)
+        const lineInfo = start === end ? `:${start}` : `:${start}-${end}`
+        return [
+          {
+            type: "symbol",
+            name: symbol.name,
+            display: `${symbol.name} (${kind}) - ${getFilename(path)}${lineInfo}`,
+            path,
+            selection: {
+              startLine: start,
+              startChar: symbol.location.range.start.character,
+              endLine: end,
+              endChar: symbol.location.range.end.character,
+            },
+          },
+        ]
+      })
       const paths = await files.searchFilesAndDirectories(query)
       const fileOptions: AtOption[] = paths
         .filter((path) => !seen.has(path))
         .map((path) => ({ type: "file", path, display: path }))
-      return [...agents, ...pinned, ...fileOptions]
+      return [...agents, ...symbolOptions, ...pinned, ...fileOptions]
     },
     key: atKey,
     filterKeys: ["display"],
     groupBy: (item) => {
       if (item.type === "agent") return "agent"
+      if (item.type === "symbol") return "symbol"
       if (item.recent) return "recent"
       return "file"
     },
     sortGroupsBy: (a, b) => {
       const rank = (category: string) => {
         if (category === "agent") return 0
-        if (category === "recent") return 1
-        return 2
+        if (category === "symbol") return 1
+        if (category === "recent") return 2
+        return 3
       }
       return rank(a.category) - rank(b.category)
     },
@@ -1639,6 +1703,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 <For each={atFlat().slice(0, 10)}>
                   {(item) => (
                     <button
+                      type="button"
                       classList={{
                         "w-full flex items-center gap-x-2 rounded-md px-2 py-0.5": true,
                         "bg-surface-raised-base-hover": atActive() === atKey(item),
@@ -1650,20 +1715,38 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                         when={item.type === "agent"}
                         fallback={
                           <>
-                            <FileIcon
-                              node={{ path: (item as { type: "file"; path: string }).path, type: "file" }}
-                              class="shrink-0 size-4"
-                            />
+                            <Show
+                              when={item.type === "symbol"}
+                              fallback={
+                                <FileIcon
+                                  node={{ path: (item as { type: "file"; path: string }).path, type: "file" }}
+                                  class="shrink-0 size-4"
+                                />
+                              }
+                            >
+                              <Icon name="code" size="small" class="text-icon-weak-base shrink-0" />
+                            </Show>
                             <div class="flex items-center text-14-regular min-w-0">
-                              <span class="text-text-weak whitespace-nowrap truncate min-w-0">
-                                {(() => {
-                                  const path = (item as { type: "file"; path: string }).path
-                                  return path.endsWith("/") ? path : getDirectory(path)
-                                })()}
-                              </span>
-                              <Show when={!(item as { type: "file"; path: string }).path.endsWith("/")}>
+                              <Show
+                                when={item.type === "symbol"}
+                                fallback={
+                                  <>
+                                    <span class="text-text-weak whitespace-nowrap truncate min-w-0">
+                                      {(() => {
+                                        const path = (item as { type: "file"; path: string }).path
+                                        return path.endsWith("/") ? path : getDirectory(path)
+                                      })()}
+                                    </span>
+                                    <Show when={!(item as { type: "file"; path: string }).path.endsWith("/")}>
+                                      <span class="text-text-strong whitespace-nowrap">
+                                        {getFilename((item as { type: "file"; path: string }).path)}
+                                      </span>
+                                    </Show>
+                                  </>
+                                }
+                              >
                                 <span class="text-text-strong whitespace-nowrap">
-                                  {getFilename((item as { type: "file"; path: string }).path)}
+                                  {(item as { type: "symbol"; display: string }).display}
                                 </span>
                               </Show>
                             </div>
@@ -1688,6 +1771,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 <For each={slashFlat()}>
                   {(cmd) => (
                     <button
+                      type="button"
                       data-slash-id={cmd.id}
                       classList={{
                         "w-full flex items-center justify-between gap-4 rounded-md px-2 py-1": true,

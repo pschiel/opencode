@@ -34,7 +34,7 @@ export namespace LSP {
     })
   export type Range = z.infer<typeof Range>
 
-  export const Symbol = z
+  export const LspSymbol = z
     .object({
       name: z.string(),
       kind: z.number(),
@@ -46,7 +46,7 @@ export namespace LSP {
     .meta({
       ref: "Symbol",
     })
-  export type Symbol = z.infer<typeof Symbol>
+  export type Symbol = z.infer<typeof LspSymbol>
 
   export const DocumentSymbol = z
     .object({
@@ -153,11 +153,30 @@ export namespace LSP {
       name: z.string(),
       root: z.string(),
       status: z.union([z.literal("connected"), z.literal("error")]),
+      ready: z.boolean(),
+      busy: z.boolean(),
+      unsupported: z.boolean(),
     })
     .meta({
       ref: "LSPStatus",
     })
   export type Status = z.infer<typeof Status>
+
+  const readiness = new Map<string, boolean>()
+  const unsupported = new Map<string, boolean>()
+
+  function setReady(id: string, ok: boolean) {
+    readiness.set(id, ok)
+  }
+
+  function setUnsupported(id: string, value: boolean) {
+    unsupported.set(id, value)
+  }
+
+  function isUnsupported(id: string, error: unknown) {
+    if (!(error instanceof Error)) return false
+    return error.message.includes("Method not found")
+  }
 
   export async function status() {
     return state().then((x) => {
@@ -168,6 +187,9 @@ export namespace LSP {
           name: x.servers[client.serverID].id,
           root: path.relative(Instance.directory, client.root),
           status: "connected",
+          ready: readiness.get(client.serverID) ?? false,
+          busy: LSPClient.progressCount(client.serverID) > 0,
+          unsupported: unsupported.get(client.serverID) ?? false,
         })
       }
       return result
@@ -356,16 +378,81 @@ export namespace LSP {
     SymbolKind.Enum,
   ]
 
-  export async function workspaceSymbol(query: string) {
-    return runAll((client) =>
+  async function querySymbols(clients: LSPClient.Info[], query: string) {
+    const tasks = clients.map((client) =>
       client.connection
-        .sendRequest("workspace/symbol", {
-          query,
+        .sendRequest("workspace/symbol", { query })
+        .then((result: any) => {
+          if (!Array.isArray(result)) {
+            setReady(client.serverID, false)
+            return []
+          }
+          const filtered = result.filter((x: LSP.Symbol) => kinds.includes(x.kind))
+          log.info("autocomplete.symbol.response", { query, serverID: client.serverID, count: filtered.length })
+          setReady(client.serverID, true)
+          setUnsupported(client.serverID, false)
+          return filtered.slice(0, 10)
         })
-        .then((result: any) => result.filter((x: LSP.Symbol) => kinds.includes(x.kind)))
-        .then((result: any) => result.slice(0, 10))
-        .catch(() => []),
-    ).then((result) => result.flat() as LSP.Symbol[])
+        .catch((error: unknown) => {
+          log.error("autocomplete.symbol.error", { query, serverID: client.serverID, error })
+          setReady(client.serverID, false)
+          if (isUnsupported(client.serverID, error)) setUnsupported(client.serverID, true)
+          return []
+        }),
+    )
+    return Promise.all(tasks).then((result) => result.flat() as LSP.Symbol[])
+  }
+
+  export async function workspaceSymbol(query: string) {
+    const clients = await state().then((x) => x.clients)
+    if (clients.length === 0) return []
+    return querySymbols(clients, query)
+  }
+
+  export async function workspaceSymbolForFiles(query: string, files: string[]) {
+    const groups = await Promise.all(files.map((file) => getClients(file)))
+    const all = groups.flat()
+    if (all.length === 0) return []
+
+    const seen = new Set<string>()
+    const clients = all.filter((client) => {
+      const key = `${client.serverID}:${client.root}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+
+    return querySymbols(clients, query)
+  }
+
+  export async function warmupReady(files: string[]) {
+    const groups = await Promise.all(files.map((file) => getClients(file)))
+    const all = groups.flat()
+    const seen = new Set<string>()
+    const clients = all.filter((client) => {
+      const key = `${client.serverID}:${client.root}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    if (clients.length === 0) return { ready: [] as string[], total: 0 }
+
+    const checks = await Promise.all(
+      clients.map(async (client) => {
+        const ok = await client.connection
+          .sendRequest("workspace/symbol", {
+            query: "__opencode_warmup__",
+          })
+          .then(() => true)
+          .catch(() => false)
+        return { id: client.serverID, ok }
+      }),
+    )
+
+    return {
+      ready: checks.filter((item) => item.ok).map((item) => item.id),
+      total: checks.length,
+    }
   }
 
   export async function documentSymbol(uri: string) {
