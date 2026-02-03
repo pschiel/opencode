@@ -74,7 +74,9 @@ const createPlatform = (password: Accessor<string | null>): Platform => ({
       multiple: opts?.multiple ?? false,
       title: opts?.title ?? t("desktop.dialog.chooseFolder"),
     })
-    return result
+    if (!result) return result
+    if (Array.isArray(result)) return result.map((p) => p.replace(/\\/g, "/"))
+    return result.replace(/\\/g, "/")
   },
 
   async openFilePickerDialog(opts) {
@@ -83,7 +85,9 @@ const createPlatform = (password: Accessor<string | null>): Platform => ({
       multiple: opts?.multiple ?? false,
       title: opts?.title ?? t("desktop.dialog.chooseFile"),
     })
-    return result
+    if (!result) return result
+    if (Array.isArray(result)) return result.map((p) => p.replace(/\\/g, "/"))
+    return result.replace(/\\/g, "/")
   },
 
   async saveFilePickerDialog(opts) {
@@ -91,7 +95,8 @@ const createPlatform = (password: Accessor<string | null>): Platform => ({
       title: opts?.title ?? t("desktop.dialog.saveFile"),
       defaultPath: opts?.defaultPath,
     })
-    return result
+    if (!result) return result
+    return result.replace(/\\/g, "/")
   },
 
   openLink(url: string) {

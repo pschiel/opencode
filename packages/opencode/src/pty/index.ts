@@ -8,6 +8,7 @@ import type { WSContext } from "hono/ws"
 import { Instance } from "../project/instance"
 import { lazy } from "@opencode-ai/util/lazy"
 import { Shell } from "@/shell/shell"
+import { Filesystem } from "@/util/filesystem"
 
 export namespace Pty {
   const log = Log.create({ service: "pty" })
@@ -102,6 +103,10 @@ export namespace Pty {
     }
 
     const cwd = input.cwd || Instance.directory
+    const normalizedCwd = Filesystem.normalize(cwd)
+    if (!(await Filesystem.isDir(normalizedCwd))) {
+      throw new Error(`Working directory does not exist or is not a directory: ${cwd}`)
+    }
     const env = {
       ...process.env,
       ...input.env,
@@ -119,7 +124,7 @@ export namespace Pty {
     const spawn = await pty()
     const ptyProcess = spawn(command, args, {
       name: "xterm-256color",
-      cwd,
+      cwd: normalizedCwd,
       env,
     })
 
@@ -128,7 +133,7 @@ export namespace Pty {
       title: input.title || `Terminal ${id.slice(-4)}`,
       command,
       args,
-      cwd,
+      cwd: normalizedCwd,
       status: "running",
       pid: ptyProcess.pid,
     } as const

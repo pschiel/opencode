@@ -3,6 +3,7 @@ import z from "zod"
 import { Tool } from "./tool"
 import { Skill } from "../skill"
 import { PermissionNext } from "../permission/next"
+import { Filesystem } from "../util/filesystem"
 
 export const SkillTool = Tool.define("skill", async (ctx) => {
   const skills = await Skill.all()
@@ -62,7 +63,7 @@ export const SkillTool = Tool.define("skill", async (ctx) => {
         metadata: {},
       })
       const content = skill.content
-      const dir = path.dirname(skill.location)
+      const dir = Filesystem.dirname(skill.location)
 
       // Format output similar to plugin pattern
       const output = [`## Skill: ${skill.name}`, "", `**Base directory**: ${dir}`, "", content.trim()].join("\n")
