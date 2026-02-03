@@ -98,10 +98,14 @@ export function DialogStatus() {
                 <text
                   flexShrink={0}
                   style={{
-                    fg: {
-                      connected: theme.success,
-                      error: theme.error,
-                    }[item.status],
+                    fg:
+                      item.status === "error"
+                        ? theme.error
+                        : item.busy
+                          ? theme.warning
+                          : item.ready
+                            ? theme.success
+                            : theme.textMuted,
                   }}
                 >
                   •

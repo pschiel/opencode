@@ -10,6 +10,13 @@
     },
   },
   "mcp": {},
+  "lsp_warmup": {
+    "on_session": true,
+    "files": [
+      "packages/opencode/src/util/filesystem.ts",
+      "packages/desktop/src-tauri/src/main.rs"
+    ]
+  },
   "tools": {
     "github-triage": false,
     "github-pr-search": false,

@@ -6,6 +6,12 @@ import { Ripgrep } from "../../file/ripgrep"
 import { LSP } from "../../lsp"
 import { Instance } from "../../project/instance"
 import { lazy } from "../../util/lazy"
+import { Log } from "../../util/log"
+import path from "path"
+import { Config } from "../../config/config"
+import { Filesystem } from "../../util/filesystem"
+
+const log = Log.create({ service: "server" })
 
 export const FileRoutes = lazy(() =>
   new Hono()
@@ -73,12 +79,14 @@ export const FileRoutes = lazy(() =>
         const dirs = c.req.valid("query").dirs
         const type = c.req.valid("query").type
         const limit = c.req.valid("query").limit
+        log.info("autocomplete.file.find", { query, dirs, type, limit })
         const results = await File.search({
           query,
           limit: limit ?? 10,
           dirs: dirs !== "false",
           type,
         })
+        log.info("autocomplete.file.result", { query, count: results.length })
         return c.json(results)
       },
     )
@@ -93,7 +101,7 @@ export const FileRoutes = lazy(() =>
             description: "Symbols",
             content: {
               "application/json": {
-                schema: resolver(LSP.Symbol.array()),
+                schema: resolver(LSP.LspSymbol.array()),
               },
             },
           },
@@ -106,12 +114,35 @@ export const FileRoutes = lazy(() =>
         }),
       ),
       async (c) => {
-        /*
-      const query = c.req.valid("query").query
-      const result = await LSP.workspaceSymbol(query)
-      return c.json(result)
-      */
-        return c.json([])
+        const query = c.req.valid("query").query
+        let result = await LSP.workspaceSymbol(query)
+        if (result.length > 0) {
+          return c.json(result)
+        }
+
+        const status = await LSP.status()
+        const cfg = await Config.get()
+        const warmup = cfg.lsp_warmup?.files ?? []
+        if (warmup.length === 0) {
+          log.info("autocomplete.symbol.warmup.skipped", { query })
+        } else {
+          const root = Instance.worktree ?? Instance.directory
+          const absolute = warmup
+            .map((file: string) => (path.isAbsolute(file) ? file : path.join(root, file)))
+            .map((file: string) => Filesystem.normalize(file))
+          const seen = new Set<string>()
+          for (const file of absolute) {
+            if (seen.has(file)) continue
+            seen.add(file)
+            if (!(await Filesystem.exists(file))) continue
+            await LSP.touchFile(file).catch(() => {})
+          }
+          const readiness = await LSP.warmupReady(absolute).catch(() => ({ ready: [], total: 0 }))
+          log.info("autocomplete.symbol.warmup.ready", { query, ...readiness })
+          result = await LSP.workspaceSymbolForFiles(query, absolute)
+        }
+
+        return c.json(result)
       },
     )
     .get(

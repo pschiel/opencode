@@ -1,5 +1,5 @@
 import { useSync } from "@tui/context/sync"
-import { createMemo, For, Show, Switch, Match } from "solid-js"
+import { createMemo, For, Show, Switch, Match, createEffect } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useTheme } from "../../context/theme"
 import { Locale } from "@/util/locale"
@@ -67,6 +67,21 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
     sync.data.provider.some((x) => x.id !== "opencode" || Object.values(x.models).some((y) => y.cost?.input !== 0)),
   )
   const gettingStartedDismissed = createMemo(() => kv.get("dismissed_getting_started", false))
+
+  // Debug logging for LSP status updates
+  createEffect(() => {
+    const lsps = sync.data.lsp
+    console.log(
+      "[sidebar] LSP status update:",
+      lsps.map((item) => ({
+        id: item.id,
+        status: item.status,
+        ready: (item as any).ready,
+        busy: (item as any).busy,
+        unsupported: (item as any).unsupported,
+      })),
+    )
+  })
 
   return (
     <Show when={session()}>
@@ -186,10 +201,14 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                       <text
                         flexShrink={0}
                         style={{
-                          fg: {
-                            connected: theme.success,
-                            error: theme.error,
-                          }[item.status],
+                          fg:
+                            item.status === "error"
+                              ? theme.error
+                              : item.busy
+                                ? theme.warning
+                                : item.ready
+                                  ? theme.success
+                                  : theme.textMuted,
                         }}
                       >
                         •

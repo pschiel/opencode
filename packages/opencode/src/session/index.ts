@@ -23,9 +23,11 @@ import type { Provider } from "@/provider/provider"
 import { PermissionNext } from "@/permission/next"
 import { Global } from "@/global"
 import { Filesystem } from "@/util/filesystem"
+import { LSP } from "@/lsp"
 
 export namespace Session {
   const log = Log.create({ service: "session" })
+  const warmed = new Set<string>()
 
   const parentTitlePrefix = "New session - "
   const childTitlePrefix = "Child session - "
@@ -245,7 +247,29 @@ export namespace Session {
     Bus.publish(Event.Updated, {
       info: result,
     })
+    await warmup(result, "create")
     return result
+  }
+
+  export async function warmup(session: Info, source: "create" | "open") {
+    if (warmed.has(session.id)) return
+    const cfg = await Config.get()
+    const warmup = cfg.lsp_warmup
+    if (!warmup?.on_session || !warmup.files || warmup.files.length === 0) return
+
+    const root = Instance.worktree ?? Instance.directory
+    const absolute = warmup.files
+      .map((file) => (path.isAbsolute(file) ? file : path.join(root, file)))
+      .map((file) => Filesystem.normalize(file))
+    for (const file of absolute) {
+      if (!(await Filesystem.exists(file))) {
+        log.info("autocomplete.symbol.warmup", { file, skipped: true, source })
+        continue
+      }
+      log.info("autocomplete.symbol.warmup", { file, source })
+      await LSP.touchFile(file).catch(() => {})
+    }
+    warmed.add(session.id)
   }
 
   export function plan(input: { slug: string; time: { created: number } }) {
