@@ -582,7 +582,9 @@ export function Autocomplete(props: {
   function moveTo(next: number) {
     setStore("selected", next)
     if (!scroll) return
-    const viewportHeight = Math.min(height(), options().length)
+    // Subtract header lines from total height to get actual viewport for items
+    const headerLines = store.visible === "@" ? 3 : 0
+    const viewportHeight = Math.min(height() - headerLines, options().length)
     const scrollBottom = scroll.scrollTop + viewportHeight
     if (next < scroll.scrollTop) {
       scroll.scrollBy(next - scroll.scrollTop)
@@ -746,7 +748,7 @@ export function Autocomplete(props: {
     if (!store.visible) return Math.min(10, count)
     positionTick()
     const extraLines = store.visible === "@" ? 3 : 0
-    return Math.min(10, count + extraLines, Math.max(1, props.anchor().y))
+    return Math.min(10 + extraLines, count + extraLines, Math.max(1, props.anchor().y))
   })
 
   let scroll: ScrollBoxRenderable | undefined
