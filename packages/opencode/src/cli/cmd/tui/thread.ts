@@ -94,6 +94,7 @@ export const TuiThreadCommand = cmd({
       env: Object.fromEntries(
         Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
       ),
+      argv: process.argv,
     })
     worker.onerror = (e) => {
       Log.Default.error(e)

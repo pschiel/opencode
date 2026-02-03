@@ -18,6 +18,7 @@ await Log.init({
     if (Installation.isLocal()) return "DEBUG"
     return "INFO"
   })(),
+  requestLog: process.argv.includes("--request-log"),
 })
 
 process.on("unhandledRejection", (e) => {
