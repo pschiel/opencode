@@ -97,7 +97,8 @@ export namespace SessionCompaction {
     auto: boolean
   }) {
     const userMessage = input.messages.findLast((m) => m.info.id === input.parentID)!.info as MessageV2.User
-    const agent = await Agent.get("compaction")
+    const msgAgent = await Agent.get(userMessage.agent)
+    const agent = await Agent.get(msgAgent.options.subagents?.compaction ?? "compaction")
     const model = agent.model
       ? await Provider.getModel(agent.model.providerID, agent.model.modelID)
       : await Provider.getModel(userMessage.model.providerID, userMessage.model.modelID)

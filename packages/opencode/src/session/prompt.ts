@@ -606,7 +606,10 @@ export namespace SessionPrompt {
         agent,
         abort,
         sessionID,
-        system: [...(await SystemPrompt.environment(model)), ...(await InstructionPrompt.system())],
+        system: [
+          ...(await SystemPrompt.environment(model, agent.options)),
+          ...(agent.options?.system?.agents_md == false ? [] : await InstructionPrompt.system())
+        ],
         messages: [
           ...MessageV2.toModelMessages(sessionMessages, model),
           ...(isLastStep
@@ -1790,7 +1793,24 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const subtaskParts = firstRealUser.parts.filter((p) => p.type === "subtask") as MessageV2.SubtaskPart[]
     const hasOnlySubtaskParts = subtaskParts.length > 0 && firstRealUser.parts.every((p) => p.type === "subtask")
 
-    const agent = await Agent.get("title")
+    const msgAgent = await Agent.get(firstRealUser.info.agent)
+    const titleAgent = msgAgent.options.subagents?.title ?? "title"
+    if (titleAgent === "none") {
+      const textPart = firstRealUser.parts.find((part) => part.type === "text" && !part.synthetic) as
+        | MessageV2.TextPart
+        | undefined
+      const text = textPart?.text?.trim()
+      if (!text) return
+      const title = text.length > 50 ? text.slice(0, 50) + "..." : text
+      return Session.update(
+        input.session.id,
+        (draft) => {
+          draft.title = title
+        },
+        { touch: false },
+      )
+    }
+    const agent = await Agent.get(titleAgent)
     if (!agent) return
     const model = await iife(async () => {
       if (agent.model) return await Provider.getModel(agent.model.providerID, agent.model.modelID)

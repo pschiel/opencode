@@ -41,20 +41,24 @@ export const TaskTool = Tool.define("task", async (ctx) => {
     async execute(params: z.infer<typeof parameters>, ctx) {
       const config = await Config.get()
 
+      // Resolve subagent type through calling agent's mapping
+      const callingAgent = ctx.agent ? await Agent.get(ctx.agent) : undefined
+      const resolvedSubagentType = callingAgent?.options.subagents?.[params.subagent_type] ?? params.subagent_type
+
       // Skip permission check when user explicitly invoked via @ or command subtask
       if (!ctx.extra?.bypassAgentCheck) {
         await ctx.ask({
           permission: "task",
-          patterns: [params.subagent_type],
+          patterns: [resolvedSubagentType],
           always: ["*"],
           metadata: {
             description: params.description,
-            subagent_type: params.subagent_type,
+            subagent_type: resolvedSubagentType,
           },
         })
       }
 
-      const agent = await Agent.get(params.subagent_type)
+      const agent = await Agent.get(resolvedSubagentType)
       if (!agent) throw new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`)
 
       const hasTaskPermission = agent.permission.some((rule) => rule.permission === "task")
