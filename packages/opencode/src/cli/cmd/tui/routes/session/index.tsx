@@ -538,6 +538,7 @@ export function Session() {
         name: "timestamps",
         aliases: ["toggle-timestamps"],
       },
+      keybind: "timestamps_toggle",
       onSelect: (dialog) => {
         setTimestamps((prev) => (prev === "show" ? "hide" : "show"))
         dialog.clear()
@@ -551,8 +552,22 @@ export function Session() {
         name: "thinking",
         aliases: ["toggle-thinking"],
       },
+      keybind: "thinking_toggle",
       onSelect: (dialog) => {
         setShowThinking((prev) => !prev)
+        dialog.clear()
+      },
+    },
+    {
+      title: "Toggle diff wrapping",
+      value: "session.toggle.diffwrap",
+      category: "Session",
+      slash: {
+        name: "diffwrap",
+      },
+      keybind: "diffwrap_toggle",
+      onSelect: (dialog) => {
+        setDiffWrapMode((prev) => (prev === "word" ? "none" : "word"))
         dialog.clear()
       },
     },
