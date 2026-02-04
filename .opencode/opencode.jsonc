@@ -13,8 +13,7 @@
   "lsp_warmup": {
     "on_session": true,
     "files": [
-      "packages/opencode/src/util/filesystem.ts",
-      "packages/desktop/src-tauri/src/main.rs"
+      "packages/opencode/src/util/filesystem.ts"
     ]
   },
   "tools": {
