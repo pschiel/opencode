@@ -680,7 +680,6 @@ export default function Layout(props: ParentProps) {
         if (!expanded && !active) continue
         const [dirStore] = globalSync.child(dir, { bootstrap: true })
         const dirSessions = dirStore.session
-          .filter((session) => session.directory === dirStore.path.directory)
           .filter((session) => !session.parentID && !session.time?.archived)
           .toSorted(compare)
         result.push(...dirSessions)
@@ -688,10 +687,7 @@ export default function Layout(props: ParentProps) {
       return result
     }
     const [projectStore] = globalSync.child(project.worktree)
-    return projectStore.session
-      .filter((session) => session.directory === projectStore.path.directory)
-      .filter((session) => !session.parentID && !session.time?.archived)
-      .toSorted(compare)
+    return projectStore.session.filter((session) => !session.parentID && !session.time?.archived).toSorted(compare)
   })
 
   type PrefetchQueue = {
@@ -2135,10 +2131,7 @@ export default function Layout(props: ParentProps) {
     })
     const slug = createMemo(() => base64Encode(props.directory))
     const sessions = createMemo(() =>
-      workspaceStore.session
-        .filter((session) => session.directory === workspaceStore.path.directory)
-        .filter((session) => !session.parentID && !session.time?.archived)
-        .toSorted(sortSessions(Date.now())),
+      workspaceStore.session.filter((session) => !session.parentID && !session.time?.archived).toSorted(sortSessions(Date.now())),
     )
     const children = createMemo(() => {
       const map = new Map<string, string[]>()
@@ -2602,10 +2595,7 @@ export default function Layout(props: ParentProps) {
     const [workspaceStore, setWorkspaceStore] = globalSync.child(props.project.worktree)
     const slug = createMemo(() => base64Encode(props.project.worktree))
     const sessions = createMemo(() =>
-      workspaceStore.session
-        .filter((session) => session.directory === workspaceStore.path.directory)
-        .filter((session) => !session.parentID && !session.time?.archived)
-        .toSorted(sortSessions(Date.now())),
+      workspaceStore.session.filter((session) => !session.parentID && !session.time?.archived).toSorted(sortSessions(Date.now())),
     )
     const children = createMemo(() => {
       const map = new Map<string, string[]>()
