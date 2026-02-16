@@ -1,5 +1,3 @@
-import { Provider } from "@/provider/provider"
-
 import { fn } from "@/util/fn"
 import z from "zod"
 import { Session } from "."
@@ -8,18 +6,10 @@ import { MessageV2 } from "./message-v2"
 import { Identifier } from "@/id/id"
 import { Snapshot } from "@/snapshot"
 
-import { Log } from "@/util/log"
-import path from "path"
-import { Instance } from "@/project/instance"
 import { Storage } from "@/storage/storage"
 import { Bus } from "@/bus"
 
-import { LLM } from "./llm"
-import { Agent } from "@/agent/agent"
-
 export namespace SessionSummary {
-  const log = Log.create({ service: "session.summary" })
-
   function unquoteGitPath(input: string) {
     if (!input.startsWith('"')) return input
     if (!input.endsWith('"')) return input
@@ -91,24 +81,14 @@ export namespace SessionSummary {
   )
 
   async function summarizeSession(input: { sessionID: string; messages: MessageV2.WithParts[] }) {
-    const files = new Set(
-      input.messages
-        .flatMap((x) => x.parts)
-        .filter((x) => x.type === "patch")
-        .flatMap((x) => x.files)
-        .map((x) => path.relative(Instance.worktree, x).replaceAll("\\", "/")),
-    )
-    const diffs = await computeDiff({ messages: input.messages }).then((x) =>
-      x.filter((x) => {
-        return files.has(x.file)
-      }),
-    )
-    await Session.update(input.sessionID, (draft) => {
-      draft.summary = {
+    const diffs = await computeDiff({ messages: input.messages })
+    await Session.setSummary({
+      sessionID: input.sessionID,
+      summary: {
         additions: diffs.reduce((sum, x) => sum + x.additions, 0),
         deletions: diffs.reduce((sum, x) => sum + x.deletions, 0),
         files: diffs.length,
-      }
+      },
     })
     await Storage.write(["session_diff", input.sessionID], diffs)
     Bus.publish(Session.Event.Diff, {
@@ -132,8 +112,15 @@ export namespace SessionSummary {
 
     const textPart = msgWithParts.parts.find((p) => p.type === "text" && !p.synthetic) as MessageV2.TextPart
     if (textPart && !userMsg.summary?.title) {
-      const agent = await Agent.get("title")
-      if (!agent) return
+      const msgAgent = await Agent.get(userMsg.agent)
+      const titleAgent = msgAgent.options.subagents?.title ?? "title"
+      if (titleAgent === "none") {
+        const title = textPart.text.length > 50 ? textPart.text.slice(0, 50) + "..." : textPart.text
+        userMsg.summary.title = title
+        await Session.updateMessage(userMsg)
+        return
+      }
+      const agent = await Agent.get(titleAgent)
       const stream = await LLM.stream({
         agent,
         user: userMsg,
@@ -206,7 +193,6 @@ export namespace SessionSummary {
       for (const part of item.parts) {
         if (part.type === "step-finish" && part.snapshot) {
           to = part.snapshot
-          break
         }
       }
     }

@@ -25,8 +25,7 @@ import { Auth } from "@/auth"
 
 export namespace LLM {
   const log = Log.create({ service: "llm" })
-
-  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
+  export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
   export type StreamInput = {
     user: MessageV2.User
@@ -39,6 +38,7 @@ export namespace LLM {
     small?: boolean
     tools: Record<string, Tool>
     retries?: number
+    toolChoice?: "auto" | "required" | "none"
   }
 
   export type StreamOutput = StreamTextResult<ToolSet, unknown>
@@ -65,13 +65,16 @@ export namespace LLM {
     const isCodex = provider.id === "openai" && auth?.type === "oauth"
 
     const system = []
+    const customSystem = input.agent.options.system
+      ? await SystemPrompt.environment(input.model, input.agent.options.system)
+      : input.system
     system.push(
       [
         // use agent prompt otherwise provider prompt
         // For Codex sessions, skip SystemPrompt.provider() since it's sent via options.instructions
         ...(input.agent.prompt ? [input.agent.prompt] : isCodex ? [] : SystemPrompt.provider(input.model)),
         // any custom prompt passed into this call
-        ...input.system,
+        ...customSystem,
         // any custom prompt from last user message
         ...(input.user.system ? [input.user.system] : []),
       ]
@@ -105,10 +108,12 @@ export namespace LLM {
           sessionID: input.sessionID,
           providerOptions: provider.options,
         })
+    // Filter out internal-only options that shouldn't be sent to LLM
+    const { system: _, subagents: __, ...agentOptionsForLLM } = input.agent.options
     const options: Record<string, any> = pipe(
       base,
       mergeDeep(input.model.options),
-      mergeDeep(input.agent.options),
+      mergeDeep(agentOptionsForLLM),
       mergeDeep(variant),
     )
     if (isCodex) {
@@ -149,14 +154,7 @@ export namespace LLM {
     )
 
     const maxOutputTokens =
-      isCodex || provider.id.includes("github-copilot")
-        ? undefined
-        : ProviderTransform.maxOutputTokens(
-            input.model.api.npm,
-            params.options,
-            input.model.limit.output,
-            OUTPUT_TOKEN_MAX,
-          )
+      isCodex || provider.id.includes("github-copilot") ? undefined : ProviderTransform.maxOutputTokens(input.model)
 
     const tools = await resolveTools(input)
 
@@ -213,6 +211,7 @@ export namespace LLM {
       providerOptions: ProviderTransform.providerOptions(input.model, params.options),
       activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
       tools,
+      toolChoice: input.toolChoice,
       maxOutputTokens,
       abortSignal: input.abort,
       headers: {

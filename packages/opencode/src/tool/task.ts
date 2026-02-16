@@ -2,7 +2,6 @@ import { Tool } from "./tool"
 import DESCRIPTION from "./task.txt"
 import z from "zod"
 import { Session } from "../session"
-import { Bus } from "../bus"
 import { MessageV2 } from "../session/message-v2"
 import { Identifier } from "../id/id"
 import { Agent } from "../agent/agent"
@@ -16,7 +15,12 @@ const parameters = z.object({
   description: z.string().describe("A short (3-5 words) description of the task"),
   prompt: z.string().describe("The task for the agent to perform"),
   subagent_type: z.string().describe("The type of specialized agent to use for this task"),
-  session_id: z.string().describe("Existing Task session to continue").optional(),
+  task_id: z
+    .string()
+    .describe(
+      "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
+    )
+    .optional(),
   command: z.string().describe("The command that triggered this task").optional(),
 })
 
@@ -41,27 +45,31 @@ export const TaskTool = Tool.define("task", async (ctx) => {
     async execute(params: z.infer<typeof parameters>, ctx) {
       const config = await Config.get()
 
+      // Resolve subagent type through calling agent's mapping
+      const callingAgent = ctx.agent ? await Agent.get(ctx.agent) : undefined
+      const resolvedSubagentType = callingAgent?.options.subagents?.[params.subagent_type] ?? params.subagent_type
+
       // Skip permission check when user explicitly invoked via @ or command subtask
       if (!ctx.extra?.bypassAgentCheck) {
         await ctx.ask({
           permission: "task",
-          patterns: [params.subagent_type],
+          patterns: [resolvedSubagentType],
           always: ["*"],
           metadata: {
             description: params.description,
-            subagent_type: params.subagent_type,
+            subagent_type: resolvedSubagentType,
           },
         })
       }
 
-      const agent = await Agent.get(params.subagent_type)
+      const agent = await Agent.get(resolvedSubagentType)
       if (!agent) throw new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`)
 
       const hasTaskPermission = agent.permission.some((rule) => rule.permission === "task")
 
       const session = await iife(async () => {
-        if (params.session_id) {
-          const found = await Session.get(params.session_id).catch(() => {})
+        if (params.task_id) {
+          const found = await Session.get(params.task_id).catch(() => {})
           if (found) return found
         }
 
@@ -113,28 +121,6 @@ export const TaskTool = Tool.define("task", async (ctx) => {
       })
 
       const messageID = Identifier.ascending("message")
-      const parts: Record<string, { id: string; tool: string; state: { status: string; title?: string } }> = {}
-      const unsub = Bus.subscribe(MessageV2.Event.PartUpdated, async (evt) => {
-        if (evt.properties.part.sessionID !== session.id) return
-        if (evt.properties.part.messageID === messageID) return
-        if (evt.properties.part.type !== "tool") return
-        const part = evt.properties.part
-        parts[part.id] = {
-          id: part.id,
-          tool: part.tool,
-          state: {
-            status: part.state.status,
-            title: part.state.status === "completed" ? part.state.title : undefined,
-          },
-        }
-        ctx.metadata({
-          title: params.description,
-          metadata: {
-            sessionId: session.id,
-            model,
-          },
-        })
-      })
 
       function cancel() {
         SessionPrompt.cancel(session.id)
@@ -158,30 +144,21 @@ export const TaskTool = Tool.define("task", async (ctx) => {
           ...Object.fromEntries((config.experimental?.primary_tools ?? []).map((t) => [t, false])),
         },
         parts: promptParts,
-      }).finally(() => {
-        unsub()
       })
 
-      const messages = await Session.messages({ sessionID: session.id })
-      const summary = messages
-        .filter((x) => x.info.role === "assistant")
-        .flatMap((msg) => msg.parts.filter((x: any) => x.type === "tool") as MessageV2.ToolPart[])
-        .map((part) => ({
-          id: part.id,
-          tool: part.tool,
-          state: {
-            status: part.state.status,
-            title: part.state.status === "completed" ? part.state.title : undefined,
-          },
-        }))
       const text = result.parts.findLast((x) => x.type === "text")?.text ?? ""
 
-      const output = text + "\n\n" + ["<task_metadata>", `session_id: ${session.id}`, "</task_metadata>"].join("\n")
+      const output = [
+        `task_id: ${session.id} (for resuming to continue this task if needed)`,
+        "",
+        "<task_result>",
+        text,
+        "</task_result>",
+      ].join("\n")
 
       return {
         title: params.description,
         metadata: {
-          summary,
           sessionId: session.id,
           model,
         },
