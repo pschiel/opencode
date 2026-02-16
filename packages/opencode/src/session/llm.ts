@@ -108,10 +108,12 @@ export namespace LLM {
           sessionID: input.sessionID,
           providerOptions: provider.options,
         })
+    // Filter out internal-only options that shouldn't be sent to LLM
+    const { system: _, subagents: __, ...agentOptionsForLLM } = input.agent.options
     const options: Record<string, any> = pipe(
       base,
       mergeDeep(input.model.options),
-      mergeDeep(input.agent.options),
+      mergeDeep(agentOptionsForLLM),
       mergeDeep(variant),
     )
     if (isCodex) {
